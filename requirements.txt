@@ -1,0 +1,12 @@
+torch
+transformers
+sentence-transformers
+pandas
+numpy
+matplotlib
+plotly
+requests
+feedparser
+yfinance
+streamlit
+gradio
