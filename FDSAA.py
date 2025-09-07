@@ -1,3 +1,7 @@
-from View1 import Hello
+from View import dashboard as dhb
+def main():
+    # Start UI (View), pass in planner
+    dhb.run_ui()
 
-Hello()
+if __name__ == "__main__":
+    main()
