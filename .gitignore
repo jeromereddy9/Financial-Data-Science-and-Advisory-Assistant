@@ -150,7 +150,7 @@ __marimo__/
 
 
 # =========================
-# Visual Studio
+# Visual Studio / VS Code
 # =========================
 
 ## User-specific files
@@ -223,6 +223,22 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
+
 # =========================
-# End of .gitignore
+# Project-Specific (Finance Assistant)
 # =========================
+
+# Hugging Face model cache
+huggingface/
+transformers_cache/
+*.bin
+*.safetensors
+
+# Data (local CSV/JSON datasets)
+data/
+*.csv
+*.tsv
+*.json
+
+# Jupyter Notebook checkpoints
+*.ipynb_checkpoints/
