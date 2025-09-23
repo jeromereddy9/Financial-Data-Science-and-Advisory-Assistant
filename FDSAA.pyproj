@@ -21,15 +21,31 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Controller\advisor_agent.py" />
+    <Compile Include="Controller\data_agent.py" />
+    <Compile Include="Controller\planner.py" />
+    <Compile Include="Controller\web_agent.py" />
+    <Compile Include="Controller\__init__.py" />
     <Compile Include="FDSAA.py" />
-    <Compile Include="Model.py" />
-    <Compile Include="Controller.py" />
-    <Compile Include="View1.py">
-      <SubType>Code</SubType>
-    </Compile>
+    <Compile Include="Model\advisor_model.py" />
+    <Compile Include="Model\data_model.py" />
+    <Compile Include="Model\embeddings_model.py" />
+    <Compile Include="Model\summarizer_model.py" />
+    <Compile Include="Model\__init__.py" />
+    <Compile Include="View\charts.py" />
+    <Compile Include="View\dashboard.py" />
+    <Compile Include="View\__init__.py" />
   </ItemGroup>
   <ItemGroup>
+    <Folder Include="Controller\" />
+    <Folder Include="Model\" />
     <Folder Include="Resources\" />
+    <Folder Include="View\" />
+    <Folder Include="View\__pycache__\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="View\__pycache__\dashboard.cpython-311.pyc" />
+    <Content Include="View\__pycache__\__init__.cpython-311.pyc" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
