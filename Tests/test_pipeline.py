@@ -1,8 +1,8 @@
 # test_pipeline.py
-from autogen_controller import AutoGenController
+from Controller import autogen_controller as autogen
 
 def main():
-    controller = AutoGenController()
+    controller = autogen.AutoGenController()
 
     # Example user query
     user_query = "Should I diversify my portfolio if I only hold shares in banks on the JSE?"
