@@ -1,50 +1,55 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from Model.advisor_model import AdvisorAgent
 from Model.data_model import DataAgent
-from Model.web_model import WebAgent
+from Model.web_model import WebSupplementationAgent
 from Model.summarizer_model import SummarizerAgent
-from Model.memory_manager import MemoryManager
-from Model.embedding_model import EmbeddingAgent  # wrapper around sentence-transformers
+from .memory_manager import MemoryManager
+from Model.embeddings_model import EmbeddingAgent  # wrapper around sentence-transformers
 
 class AutoGenController:
     def __init__(self):
-        self.web_agent = WebAgent()
+        self.web_agent = WebSupplementationAgent()
         self.embedding_agent = EmbeddingAgent()
         self.advisor_agent = AdvisorAgent()
         self.data_agent = DataAgent()
         self.summarizer_agent = SummarizerAgent()
         self.memory_manager = MemoryManager()
 
-    def handle_user_query(self, user_query):
-        # Step 1: Web Agent retrieves relevant info
-        web_texts = self.web_agent.fetch_financial_news(user_query)
-
-        # Step 2: Embed the retrieved info
-        embedded_texts = self.embedding_agent.embed_texts(web_texts)
-
-        # Step 3: Check memory for context
+    def process_user_query(self, user_query):
+        # 1. Fetch relevant web context
+        external_texts = self.web_agent.get_relevant_info(user_query)
+        
+        # 2. Include memory context if needed
         memory_contexts = self.memory_manager.search_memory(user_query)
+        memory_summaries = [m['summary'] for m in memory_contexts]
 
-        # Combine everything for the Advisor
-        combined_context = "\n".join([t['summary'] for t in memory_contexts] + embedded_texts)
+        external_summaries = [a["summary"] for a in external_texts if "summary" in a]
 
-        # Step 4: Advisor generates financial advice / explanations
-        advisor_response = self.advisor_agent.get_financial_advice(user_query, context=combined_context)
+        # Combine web info + memory context for advisor
+        combined_context = "\n".join(memory_summaries + external_texts)
 
-        # Step 5: Decide if data model should be invoked (graphs/analysis)
-        if self.data_agent.should_generate_analysis(user_query, advisor_response):
-            analysis_output = self.data_agent.generate_analysis(advisor_response)
-            advisor_response += "\n\n" + analysis_output
+        # 3. Advisor generates advice using combined context
+        advisor_response = self.advisor_agent.get_advice(user_query, context=combined_context)
 
-        # Step 6: Summarizer condenses response
-        summary, detailed_insights = self.summarizer_agent.create_insights(advisor_response)
+        # 4. Check if the advisor mentions visualizations
+        if "visualize" in advisor_response.lower():
+            analysis_code = self.data_agent.generate_analysis(advisor_response)
+            analysis_results = execute_code(analysis_code)  # run the code safely
+        else:
+            analysis_results = None
 
-        # Step 7: Store session in memory
+        # 5. Summarize advisor response for display
+        summary, detailed_insights = self.summarizer_agent.summarize(advisor_response)
+
+        # 6. Add the current session to memory
         self.memory_manager.add_session(advisor_response)
 
-        # Step 8: Return results for GUI
         return {
             "advisor_full_response": advisor_response,
             "summary": summary,
             "detailed_insights": detailed_insights,
-            "analysis_output": analysis_output if 'analysis_output' in locals() else None
+            "analysis_results": analysis_results
         }
