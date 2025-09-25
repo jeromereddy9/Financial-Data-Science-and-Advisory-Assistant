@@ -4,23 +4,69 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import plotly.express as px
+import sys
+import os
+import json
+import time
+import traceback
 
-# Page config
+# Add the controller path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Import the Financial Advisory System
+try:
+    from Controller.autogen_controller import FinancialAdvisoryController
+    CONTROLLER_AVAILABLE = True
+except ImportError as e:
+    st.error(f"Failed to import Financial Advisory Controller: {e}")
+    CONTROLLER_AVAILABLE = False
+
+# Page config - MUST be first Streamlit command
 st.set_page_config(
-    page_title="Vibe Finance",
+    page_title="JSE Financial Advisory System",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state
-if "theme" not in st.session_state:
-    st.session_state["theme"] = "dark"
-if "section" not in st.session_state:
-    st.session_state["section"] = "dashboard"
+def initialize_session_state():
+    """Initialize all session state variables"""
+    if "theme" not in st.session_state:
+        st.session_state["theme"] = "dark"
+    if "section" not in st.session_state:
+        st.session_state["section"] = "dashboard"
+    if "controller" not in st.session_state:
+        st.session_state["controller"] = None
+    if "controller_status" not in st.session_state:
+        st.session_state["controller_status"] = "not_initialized"
+    if "query_history" not in st.session_state:
+        st.session_state["query_history"] = []
+    if "current_analysis" not in st.session_state:
+        st.session_state["current_analysis"] = None
+    if "example_query" not in st.session_state:
+        st.session_state["example_query"] = None
+
+@st.cache_resource
+def initialize_controller():
+    """Initialize the Financial Advisory Controller (cached)"""
+    if not CONTROLLER_AVAILABLE:
+        return None, "import_error"
+    
+    try:
+        with st.spinner("🚀 Initializing AI Financial Advisory System..."):
+            controller = FinancialAdvisoryController()
+            health = controller.health_check()
+            return controller, health['overall_status']
+    except Exception as e:
+        st.error(f"Failed to initialize controller: {e}")
+        return None, "initialization_error"
 
 def apply_theme_styles():
     """Apply theme-specific styles"""
+    # Safety check - ensure theme is initialized
+    if "theme" not in st.session_state:
+        st.session_state["theme"] = "dark"
+        
     if st.session_state["theme"] == "dark":
         colors = {
             'bg': '#0b0d12',
@@ -54,18 +100,15 @@ def apply_theme_styles():
 
     st.markdown(f"""
     <style>
-    /* Main app styling */
     .stApp {{
         background-color: {colors['bg']};
         color: {colors['text']};
     }}
     
-    /* Sidebar styling */
-    .css-1d391kg, .css-12oz5g7 {{
+    .css-1d391kg, .css-12oz5g7, .stSidebar > div {{
         background-color: {colors['sidebar_bg']};
     }}
     
-    /* Custom card styles */
     .metric-card {{
         background: {colors['panel']};
         padding: 24px;
@@ -98,7 +141,6 @@ def apply_theme_styles():
         line-height: 1;
     }}
     
-    /* Status pills */
     .status-pill {{
         display: inline-flex;
         align-items: center;
@@ -122,13 +164,18 @@ def apply_theme_styles():
         border: 1px solid rgba(240,180,41,0.3);
     }}
     
+    .pill-danger {{
+        background: rgba(239,71,111,0.15);
+        color: {colors['danger']};
+        border: 1px solid rgba(239,71,111,0.3);
+    }}
+    
     .pill-neutral {{
         background: {colors['muted']};
         color: {colors['subtext']};
         border: 1px solid {colors['border']};
     }}
     
-    /* News card styling */
     .news-card {{
         background: {colors['panel']};
         padding: 20px;
@@ -157,36 +204,6 @@ def apply_theme_styles():
         margin-bottom: 12px;
     }}
     
-    .news-actions {{
-        display: flex;
-        gap: 8px;
-    }}
-    
-    .btn-primary {{
-        background: {colors['primary']};
-        color: white;
-        border: none;
-        padding: 8px 16px;
-        border-radius: 8px;
-        font-size: 12px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.2s ease;
-    }}
-    
-    .btn-secondary {{
-        background: transparent;
-        color: {colors['subtext']};
-        border: 1px solid {colors['border']};
-        padding: 8px 16px;
-        border-radius: 8px;
-        font-size: 12px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.2s ease;
-    }}
-    
-    /* Chart container */
     .chart-container {{
         background: {colors['panel']};
         padding: 24px;
@@ -202,7 +219,6 @@ def apply_theme_styles():
         margin-bottom: 16px;
     }}
     
-    /* Sector tags */
     .sector-tag {{
         display: inline-block;
         background: {colors['muted']};
@@ -215,14 +231,23 @@ def apply_theme_styles():
         border: 1px solid {colors['border']};
     }}
     
-    /* Hide streamlit elements */
-    #MainMenu {{visibility: hidden;}}
-    footer {{visibility: hidden;}}
-    header {{visibility: hidden;}}
+    .query-response {{
+        background: {colors['panel']};
+        border: 1px solid {colors['border']};
+        border-radius: 12px;
+        padding: 20px;
+        margin: 16px 0;
+    }}
     
-    /* Custom sidebar styling */
-    .sidebar-section {{
-        padding: 16px 0;
+    .code-block {{
+        background: {colors['muted']};
+        border-radius: 8px;
+        padding: 16px;
+        font-family: monospace;
+        font-size: 12px;
+        color: {colors['text']};
+        overflow-x: auto;
+        margin: 12px 0;
     }}
     
     .sidebar-title {{
@@ -235,45 +260,50 @@ def apply_theme_styles():
         gap: 8px;
     }}
     
-    .theme-toggle {{
-        margin-top: 24px;
-        padding-top: 16px;
-        border-top: 1px solid {colors['border']};
-    }}
-    
-    /* Search bar */
-    .search-container {{
-        position: relative;
-        margin-bottom: 24px;
-    }}
-    
-    .search-input {{
-        width: 100%;
-        padding: 12px 16px 12px 40px;
-        background: {colors['panel']};
-        border: 1px solid {colors['border']};
-        border-radius: 12px;
-        color: {colors['text']};
-        font-size: 14px;
-    }}
-    
-    .search-icon {{
-        position: absolute;
-        left: 12px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: {colors['subtext']};
-    }}
+    #MainMenu {{visibility: hidden;}}
+    footer {{visibility: hidden;}}
+    header {{visibility: hidden;}}
     </style>
     """, unsafe_allow_html=True)
 
+def display_system_status():
+    """Display system status in the sidebar"""
+    if st.session_state.controller is None:
+        st.sidebar.error("⚠️ AI System Offline")
+        return
+    
+    try:
+        health = st.session_state.controller.health_check()
+        system_info = st.session_state.controller.get_system_info()
+        
+        if health['overall_status'] == 'healthy':
+            st.sidebar.success("✅ AI System Healthy")
+        elif health['overall_status'] == 'degraded':
+            st.sidebar.warning("⚠️ AI System Degraded")
+        else:
+            st.sidebar.error("❌ AI System Critical")
+        
+        # Agent status
+        agent_status = system_info.get('system_status', {})
+        active_agents = sum(1 for status in agent_status.values() if status)
+        total_agents = len(agent_status)
+        
+        st.sidebar.metric("Active Agents", f"{active_agents}/{total_agents}")
+        
+        # Memory stats
+        if 'memory_stats' in system_info:
+            memory_stats = system_info['memory_stats']
+            st.sidebar.metric("Session Memory", 
+                            f"{memory_stats.get('total_sessions', 0)} sessions")
+        
+    except Exception as e:
+        st.sidebar.error(f"Status Error: {str(e)[:50]}...")
+
 def create_sample_chart():
     """Create a sample chart for the dashboard"""
-    # Generate sample market data
     dates = pd.date_range(start='2023-01-01', end='2023-12-31', freq='D')
     np.random.seed(42)
     
-    # Simulate JSE Top 40 data
     base_price = 69000
     returns = np.random.normal(0.0002, 0.015, len(dates))
     prices = [base_price]
@@ -297,7 +327,6 @@ def create_sample_chart():
         fillcolor='rgba(79,140,255,0.1)' if st.session_state["theme"] == "dark" else None
     ))
     
-    # Styling based on theme
     bg_color = '#1e2530' if st.session_state["theme"] == "dark" else '#ffffff'
     text_color = '#e8ebf1' if st.session_state["theme"] == "dark" else '#1f2430'
     grid_color = '#2a3441' if st.session_state["theme"] == "dark" else '#eef1f7'
@@ -308,33 +337,155 @@ def create_sample_chart():
         paper_bgcolor=bg_color,
         plot_bgcolor=bg_color,
         font=dict(color=text_color),
-        xaxis=dict(
-            showgrid=True,
-            gridcolor=grid_color,
-            showline=False,
-            zeroline=False
-        ),
-        yaxis=dict(
-            showgrid=True,
-            gridcolor=grid_color,
-            showline=False,
-            zeroline=False
-        ),
+        xaxis=dict(showgrid=True, gridcolor=grid_color, showline=False, zeroline=False),
+        yaxis=dict(showgrid=True, gridcolor=grid_color, showline=False, zeroline=False),
         showlegend=False
     )
     
     return fig
 
-def run_ui():
+def process_financial_query(query):
+    """Process a financial query using the AI system"""
+    if st.session_state.controller is None:
+        return {"error": "AI system not available"}
+    
+    try:
+        with st.spinner("🤖 AI analyzing your query..."):
+            start_time = time.time()
+            result = st.session_state.controller.process_user_query(query)
+            processing_time = time.time() - start_time
+            
+            # Add to history
+            st.session_state.query_history.insert(0, {
+                "query": query,
+                "timestamp": datetime.now(),
+                "result": result,
+                "processing_time": processing_time
+            })
+            
+            # Keep only last 10 queries
+            if len(st.session_state.query_history) > 10:
+                st.session_state.query_history = st.session_state.query_history[:10]
+            
+            return result
+            
+    except Exception as e:
+        error_result = {
+            "error": True,
+            "advisor_full_response": f"Error processing query: {str(e)}",
+            "summary": "Query processing failed",
+            "session_id": "error"
+        }
+        return error_result
+
+def display_query_result(result):
+    """Display the AI query result in a formatted way"""
+    if result.get("error"):
+        st.error(f"❌ {result.get('advisor_full_response', 'Unknown error')}")
+        return
+    
+    # Main advisor response
+    st.markdown("### 🎯 Financial Advice")
+    advisor_response = result.get("advisor_full_response", "No response available")
+    st.markdown(f'<div class="query-response">{advisor_response}</div>', unsafe_allow_html=True)
+    
+    # Summary and insights
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📋 Quick Summary")
+        summary = result.get("summary", "No summary available")
+        st.info(summary)
+        
+    with col2:
+        st.markdown("#### 💡 Key Insights")
+        insights = result.get("detailed_insights", "No insights available")
+        st.info(insights)
+    
+    # Executive summary
+    exec_summary = result.get("executive_summary", {})
+    if exec_summary and not exec_summary.get("error"):
+        st.markdown("#### 📊 Executive Summary")
+        
+        tabs = st.tabs(["Key Takeaways", "Recommendations", "Risks", "Actions"])
+        
+        with tabs[0]:
+            st.write(exec_summary.get("key_takeaways", "Not available"))
+        
+        with tabs[1]:
+            st.write(exec_summary.get("investment_recommendation", "Not available"))
+            
+        with tabs[2]:
+            st.write(exec_summary.get("risk_assessment", "Not available"))
+            
+        with tabs[3]:
+            st.write(exec_summary.get("action_items", "Not available"))
+    
+    # Data analysis results
+    analysis_results = result.get("analysis_results")
+    if analysis_results and not analysis_results.get("error"):
+        st.markdown("#### 📈 Data Analysis")
+        
+        # Data insights
+        data_insights = analysis_results.get("data_insights", "")
+        if data_insights:
+            st.write("**Market Insights:**")
+            st.write(data_insights)
+        
+        # Generated code
+        analysis_code = analysis_results.get("analysis_code", "")
+        if analysis_code:
+            with st.expander("📄 View Generated Analysis Code"):
+                st.code(analysis_code, language="python")
+    
+    # Web context
+    web_context = result.get("web_context", [])
+    if web_context:
+        st.markdown("#### 📰 Related Market News")
+        for i, article in enumerate(web_context[:3], 1):
+            st.markdown(f"""
+            <div class="news-card">
+                <div class="news-title">{article.get('headline', 'No headline')}</div>
+                <div class="news-meta">{article.get('source', 'Unknown')} • JSE Market News</div>
+                <p style="color: #a7b0c0; font-size: 14px; margin: 8px 0;">{article.get('summary', 'No summary')[:150]}...</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Session info
+    with st.expander("ℹ️ Session Information"):
+        st.json({
+            "Session ID": result.get("session_id", "unknown"),
+            "Request Type": result.get("request_type", "unknown"),
+            "Memory Used": result.get("memory_used", False),
+            "System Status": result.get("system_status", {})
+        })
+
+def main():
+    """Main application function"""
+    # Initialize session state FIRST
+    initialize_session_state()
+    
+    # Apply theme styles AFTER session state is initialized
     apply_theme_styles()
+    
+    # Initialize controller if not done
+    if st.session_state.controller is None and CONTROLLER_AVAILABLE:
+        controller, status = initialize_controller()
+        st.session_state.controller = controller
+        st.session_state.controller_status = status
     
     # Sidebar
     with st.sidebar:
-        st.markdown('<div class="sidebar-title">📈 Vibe Finance</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-title">📈 JSE AI Advisory</div>', unsafe_allow_html=True)
+        
+        # System status
+        display_system_status()
+        
+        st.markdown("---")
         
         # Navigation
-        sections = ["dashboard", "datasci", "news", "advisor", "logs", "settings"]
-        labels = ["🏠 Dashboard", "📊 Data Explorer", "📰 Market News", "💡 Advisor", "🧪 Validator & Logs", "⚙️ Settings"]
+        sections = ["dashboard", "advisor", "datasci", "news", "logs", "settings"]
+        labels = ["🏠 Dashboard", "💡 AI Advisor", "📊 Data Explorer", "📰 Market News", "🧪 System Logs", "⚙️ Settings"]
         
         for sec, label in zip(sections, labels):
             if st.button(label, key=f"nav_{sec}", use_container_width=True):
@@ -342,32 +493,48 @@ def run_ui():
                 st.rerun()
         
         # Theme toggle
-        st.markdown('<div class="theme-toggle"></div>', unsafe_allow_html=True)
+        st.markdown("---")
         if st.button("🌗 Toggle Theme", key="theme_toggle", use_container_width=True):
             st.session_state["theme"] = "light" if st.session_state["theme"] == "dark" else "dark"
             st.rerun()
         
-        st.markdown('<p style="color: #a7b0c0; font-size: 12px; margin-top: 16px;">JSE-focused multi-agent hub</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #a7b0c0; font-size: 12px; margin-top: 16px;">JSE-focused AI financial advisor</p>', unsafe_allow_html=True)
 
     # Main content area
     if st.session_state["section"] == "dashboard":
-        # Header with search
+        # Header
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.markdown("# Dashboard")
+            st.markdown("# JSE Market Dashboard")
         with col2:
-            st.button("📤 Export", key="export_btn")
-            st.button("➕ New Analysis", key="new_analysis_btn", type="primary")
+            if st.button("🔄 Refresh Data", key="refresh_btn"):
+                st.rerun()
         
-        # Search bar
-        st.markdown("""
-        <div class="search-container">
-            <div class="search-icon">🔍</div>
-        </div>
-        """, unsafe_allow_html=True)
-        search_query = st.text_input("", placeholder="Search tickers, sectors, or news...", label_visibility="collapsed")
+        # Quick query bar
+        st.markdown("### 🤖 Quick AI Query")
+        query_col1, query_col2 = st.columns([4, 1])
         
-        # Metrics row
+        with query_col1:
+            quick_query = st.text_input("", 
+                placeholder="Ask about JSE stocks, sectors, or get investment advice...", 
+                label_visibility="collapsed",
+                key="quick_query")
+        
+        with query_col2:
+            if st.button("Ask AI", type="primary", disabled=(not CONTROLLER_AVAILABLE or st.session_state.controller is None)):
+                if quick_query:
+                    result = process_financial_query(quick_query)
+                    st.session_state.current_analysis = result
+                    st.rerun()
+        
+        # Display current analysis if available
+        if st.session_state.current_analysis:
+            st.markdown("---")
+            display_query_result(st.session_state.current_analysis)
+        
+        st.markdown("---")
+        
+        # Dashboard metrics and charts
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -389,13 +556,13 @@ def run_ui():
             """, unsafe_allow_html=True)
         
         with col3:
-            st.markdown("""
+            ai_status = "Online" if st.session_state.controller else "Offline"
+            ai_pill_class = "pill-success" if st.session_state.controller else "pill-danger"
+            st.markdown(f"""
             <div class="metric-card">
-                <div class="metric-title">Most Active</div>
-                <div class="metric-value">AGL, NPN, SOL</div>
-                <div class="sector-tag">Banking</div>
-                <div class="sector-tag">Mining</div>
-                <div class="sector-tag">Tech</div>
+                <div class="metric-title">AI Advisor Status</div>
+                <div class="metric-value">{ai_status}</div>
+                <div class="status-pill {ai_pill_class}">{'🤖 Ready' if st.session_state.controller else '⚠️ Unavailable'}</div>
             </div>
             """, unsafe_allow_html=True)
         
@@ -408,39 +575,81 @@ def run_ui():
             st.plotly_chart(fig, use_container_width=True)
         
         with col2:
-            st.markdown("""
-            <div class="chart-container">
-                <div class="chart-title">Latest Headlines</div>
-                <div class="news-card">
-                    <div class="news-title">Rand firms on commodity rally</div>
-                    <div class="news-meta">Fin24 • 10:31</div>
-                    <div class="news-actions">
-                        <button class="btn-secondary">Read</button>
-                        <button class="btn-primary">Summarize</button>
+            st.markdown('<div class="chart-container"><div class="chart-title">Recent Queries</div></div>', unsafe_allow_html=True)
+            
+            if st.session_state.query_history:
+                for i, query_item in enumerate(st.session_state.query_history[:3]):
+                    timestamp = query_item["timestamp"].strftime("%H:%M")
+                    query_text = query_item["query"][:50] + "..." if len(query_item["query"]) > 50 else query_item["query"]
+                    processing_time = f"{query_item['processing_time']:.1f}s"
+                    
+                    st.markdown(f"""
+                    <div class="news-card">
+                        <div class="news-title">{query_text}</div>
+                        <div class="news-meta">{timestamp} • {processing_time}</div>
                     </div>
-                </div>
-                <div class="news-card">
-                    <div class="news-title">JSE banks outperform after rate outlook</div>
-                    <div class="news-meta">Moneyweb • 09:15</div>
-                    <div class="news-actions">
-                        <button class="btn-secondary">Read</button>
-                        <button class="btn-primary">Summarize</button>
-                    </div>
-                </div>
-                <div class="news-card">
-                    <div class="news-title">Gold miners lift Top 40</div>
-                    <div class="news-meta">NewsAPI • 08:02</div>
-                    <div class="news-actions">
-                        <button class="btn-secondary">Read</button>
-                        <button class="btn-primary">Summarize</button>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No recent queries")
+
+    elif st.session_state["section"] == "advisor":
+        st.markdown("# 🤖 AI Financial Advisor")
+        
+        if not CONTROLLER_AVAILABLE or st.session_state.controller is None:
+            st.error("AI Advisory System is not available. Please check system configuration.")
+            return
+        
+        # Query input
+        st.markdown("### Ask Your Financial Question")
+        user_query = st.text_area("", 
+            placeholder="Example: Should I diversify my portfolio if I only hold JSE banking stocks?",
+            height=100,
+            label_visibility="collapsed")
+        
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            if st.button("🎯 Get Advice", type="primary", disabled=not user_query.strip()):
+                if user_query.strip():
+                    result = process_financial_query(user_query.strip())
+                    display_query_result(result)
+        
+        with col2:
+            if st.button("📋 Example Query"):
+                example_queries = [
+                    "Should I diversify my JSE banking portfolio?",
+                    "What are the trends for AGL and NPN stocks?",
+                    "How is the JSE mining sector performing?",
+                    "What should I consider when investing in MTN shares?"
+                ]
+                st.session_state.example_query = np.random.choice(example_queries)
+                st.rerun()
+        
+        # Show example query if set
+        if st.session_state.example_query:
+            st.info(f"💡 Example: {st.session_state.example_query}")
+            if st.button("Use This Example"):
+                result = process_financial_query(st.session_state.example_query)
+                display_query_result(result)
+        
+        # Query history
+        if st.session_state.query_history:
+            st.markdown("### 📚 Query History")
+            
+            for i, query_item in enumerate(st.session_state.query_history[:5]):
+                with st.expander(f"Query {i+1}: {query_item['query'][:60]}..."):
+                    st.markdown(f"**Timestamp:** {query_item['timestamp']}")
+                    st.markdown(f"**Processing Time:** {query_item['processing_time']:.1f}s")
+                    
+                    if st.button(f"View Results", key=f"view_result_{i}"):
+                        display_query_result(query_item['result'])
 
     elif st.session_state["section"] == "datasci":
-        st.markdown("# Data Explorer")
+        st.markdown("# 📊 Data Explorer")
         
+        st.info("💡 Tip: Ask the AI Advisor to generate data visualizations by including requests like 'show me a chart' or 'visualize the data'")
+        
+        # Data explorer interface
         col1, col2, col3 = st.columns(3)
         with col1:
             ticker = st.text_input("Ticker", placeholder="e.g., NPN.JO, AGL.JO")
@@ -454,116 +663,63 @@ def run_ui():
             "Volatility (ATR)", "Returns & Drawdowns"
         ])
         
-        st.markdown('<div class="chart-container"><div class="chart-title">Visualization</div></div>', unsafe_allow_html=True)
-        if ticker:
-            fig = create_sample_chart()
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Enter a ticker symbol to see analysis")
-        
-        st.markdown('<div class="chart-container"><div class="chart-title">Generated Code</div></div>', unsafe_allow_html=True)
-        if ticker and analysis_type:
-            st.code(f"""
-import yfinance as yf
-import pandas as pd
-import plotly.graph_objects as go
-
-# Fetch data for {ticker}
-data = yf.download('{ticker}', start='{start_date}', end='{end_date}')
-
-# Perform {analysis_type.lower()} analysis
-# ... analysis code here ...
-            """, language="python")
-
-    elif st.session_state["section"] == "news":
-        st.markdown("# Market News")
-        
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            filter_query = st.text_input("Filter", placeholder="Filter by company, sector, or keyword")
-        with col2:
-            st.selectbox("Source", ["All Sources", "Fin24", "Moneyweb", "NewsAPI", "Business Day"])
-        
-        # Sample news items
-        news_items = [
-            {"title": "Rand firms on commodity rally", "source": "Fin24", "time": "10:31", "summary": "The rand strengthened against major currencies..."},
-            {"title": "JSE banks outperform after rate outlook", "source": "Moneyweb", "time": "09:15", "summary": "Banking stocks led gains on the JSE..."},
-            {"title": "Gold miners lift Top 40", "source": "NewsAPI", "time": "08:02", "summary": "Gold mining companies boosted the benchmark..."},
-            {"title": "Tech stocks under pressure", "source": "Business Day", "time": "07:45", "summary": "Technology shares faced selling pressure..."}
-        ]
-        
-        for item in news_items:
-            st.markdown(f"""
-            <div class="news-card">
-                <div class="news-title">{item['title']}</div>
-                <div class="news-meta">{item['source']} • {item['time']}</div>
-                <p style="color: #a7b0c0; font-size: 14px; margin: 8px 0;">{item['summary']}</p>
-                <div class="news-actions">
-                    <button class="btn-secondary">Read Full</button>
-                    <button class="btn-primary">AI Summary</button>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    elif st.session_state["section"] == "advisor":
-        st.markdown("# AI Advisor")
-        
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-title">Current Tasks</div>
-            <ul style="color: #e8ebf1; margin: 16px 0;">
-                <li style="margin: 8px 0;">Analyzing JSE banking sector performance</li>
-                <li style="margin: 8px 0;">Monitoring commodity price movements</li>
-                <li style="margin: 8px 0;">Tracking rand volatility patterns</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-title">Confidence Level</div>
-            <div style="width: 100%; background: #2a3441; border-radius: 12px; height: 16px; margin-top: 8px;">
-                <div style="height: 100%; width: 72%; background: linear-gradient(90deg, #f0b429, #2ec27e); border-radius: 12px;"></div>
-            </div>
-            <div style="color: #a7b0c0; font-size: 12px; margin-top: 4px;">72% - High confidence in current analysis</div>
-        </div>
-        """, unsafe_allow_html=True)
+        if st.button("🤖 Generate AI Analysis", type="primary"):
+            if ticker:
+                ai_query = f"Analyze {ticker} stock for {analysis_type.lower()} from {start_date} to {end_date}. Show me a chart and provide insights."
+                result = process_financial_query(ai_query)
+                display_query_result(result)
+            else:
+                st.warning("Please enter a ticker symbol")
 
     elif st.session_state["section"] == "logs":
-        st.markdown("# Validator & Logs")
+        st.markdown("# 🧪 System Logs & Validation")
         
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-title">Recent Events</div>
-            <div style="font-family: monospace; font-size: 12px; color: #a7b0c0;">
-                <div style="margin: 8px 0;">[09:31] ✅ Market data synchronized</div>
-                <div style="margin: 8px 0;">[09:30] 📊 JSE opening prices updated</div>
-                <div style="margin: 8px 0;">[09:15] 📰 News feed refreshed (4 new articles)</div>
-                <div style="margin: 8px 0;">[09:00] 🔄 Daily validation completed</div>
-                <div style="margin: 8px 0;">[08:45] ⚠️  Minor data discrepancy resolved</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        if st.session_state.controller:
+            # System health check
+            health = st.session_state.controller.health_check()
+            system_info = st.session_state.controller.get_system_info()
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("### System Health")
+                status_color = {"healthy": "success", "degraded": "warning", "critical": "error"}
+                getattr(st, status_color.get(health['overall_status'], 'info'))(
+                    f"Status: {health['overall_status'].title()}"
+                )
+                
+                if health.get('critical_issues'):
+                    st.error("Critical Issues:")
+                    for issue in health['critical_issues']:
+                        st.write(f"• {issue}")
+                
+                if health.get('warnings'):
+                    st.warning("Warnings:")
+                    for warning in health['warnings']:
+                        st.write(f"• {warning}")
+            
+            with col2:
+                st.markdown("### Agent Status")
+                agent_health = health.get('agent_health', {})
+                for agent, status in agent_health.items():
+                    status_icon = {"healthy": "✅", "failed": "❌", "degraded": "⚠️"}
+                    st.write(f"{status_icon.get(status, '❓')} {agent}: {status}")
+            
+            st.markdown("### System Information")
+            with st.expander("View Full System Info"):
+                st.json(system_info)
+        
+        else:
+            st.error("System not initialized - cannot display logs")
 
+    elif st.session_state["section"] == "news":
+        st.markdown("# 📰 Market News")
+        st.info("News section coming soon...")
+    
     elif st.session_state["section"] == "settings":
-        st.markdown("# Settings")
-        
-        st.markdown("### Data Sources")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.checkbox("Yahoo Finance", value=True, key="yahoo_finance")
-            st.checkbox("Alpha Vantage", value=True, key="alpha_vantage")
-            st.checkbox("Investpy", value=True, key="investpy")
-        
-        with col2:
-            st.checkbox("Fin24 RSS", value=True, key="fin24_rss")
-            st.checkbox("Moneyweb", value=True, key="moneyweb")
-            st.checkbox("NewsAPI", value=True, key="newsapi")
-        
-        st.markdown("### Refresh Intervals")
-        st.slider("Market Data (seconds)", min_value=30, max_value=300, value=60)
-        st.slider("News Feed (minutes)", min_value=5, max_value=60, value=15)
+        st.markdown("# ⚙️ Settings")
+        st.info("Settings section coming soon...")
 
+# Entry point
 if __name__ == "__main__":
-    run_ui()
+    main()

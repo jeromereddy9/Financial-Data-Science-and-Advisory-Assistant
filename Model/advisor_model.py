@@ -13,7 +13,7 @@ import re
 
 class AdvisorAgent:
     def __init__(self):
-        self.model_name = "tiiuae/falcon-rw-1b"  # open alternative to Falcon-1B-Instruct
+        self.model_name =  "Qwen/Qwen2.5-3B-Instruct"   # open alternative to Falcon-1B-Instruct
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         
@@ -91,24 +91,23 @@ class AdvisorAgent:
         return "\n".join(formatted_context)
     
     def _create_jse_financial_prompt(self, query: str, context: str) -> str:
-        """Create a JSE-specific financial advisory prompt"""
-        
-        prompt = f"""You are an expert financial advisor specializing in the Johannesburg Stock Exchange (JSE) and South African markets. 
+        """Create a JSE-specific financial advisory prompt with strict constraints"""
+    
+        prompt = f"""You are a professional JSE financial analyst. Provide ONLY factual, specific analysis.
 
-IMPORTANT GUIDELINES:
-- Provide practical, actionable advice specific to JSE trading and South African investments
-- Consider South African economic conditions, rand volatility, and local market dynamics
-- Mention relevant JSE sectors (mining, banking, telecommunications, etc.) when appropriate
-- Include risk warnings and remind users this is not personalized financial advice
-- Consider tax implications for South African residents (capital gains tax, dividend withholding tax)
-- Be aware of JSE trading hours (9:00 AM - 5:00 PM SAST) and settlement periods
+        STRICT REQUIREMENTS:
+        - Answer the specific question asked
+        - Focus on JSE-listed companies and South African market conditions  
+        - Provide concrete financial metrics and sector analysis
+        - Keep response under 200 words
+        - No marketing language or promotional content
+        - No generic investment philosophy
+        - Include specific JSE stock codes when relevant
 
-{context}
+        QUESTION: {query}
 
-USER QUESTION: {query}
-
-FINANCIAL ADVICE (provide structured, clear guidance):"""
-        
+        ANALYSIS (factual, specific, under 200 words):"""
+    
         return prompt
     
     def _safe_tokenize(self, text: str, max_length: int = 1024):
