@@ -1,4 +1,4 @@
-import os
+﻿import os
 import pickle
 import json
 from collections import deque
@@ -7,6 +7,8 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 import hashlib
+import re
+
 
 class MemoryManager:
     def __init__(self, embedding_model_name="all-MiniLM-L6-v2", 
@@ -22,7 +24,9 @@ class MemoryManager:
         self.embedding_model_name = embedding_model_name
         self.memory_file = memory_file
         self.max_sessions = max_sessions
-        
+        self.verified_companies_cache = {}
+        self.cache = {}
+
         try:
             self.embedding_model = SentenceTransformer(embedding_model_name)
             print(f"[MemoryManager] Loaded embedding model: {embedding_model_name}")
@@ -42,41 +46,72 @@ class MemoryManager:
             "general_advice": ["invest", "advice", "recommend", "strategy", "plan"]
         }
     
+    def get(self, key: str):
+        return self.cache.get(key)
+
+    def set(self, key: str, value):
+        self.cache[key] = value
+
+    def get_verified_companies(self, exchange: str) -> dict:
+        """
+        Retrieve verified companies for a given exchange.
+        Returns empty dict if none cached.
+        """
+        return self.verified_companies_cache.get(exchange, {})
+
+    def set_verified_companies(self, exchange: str, companies: dict):
+        """
+        Store verified companies for a given exchange.
+        """
+        self.verified_companies_cache[exchange] = companies
+    def _sanitize_text(self, text: str) -> str:
+        """
+        Clean advisor responses before saving to memory.
+        Removes internal markers, instructions, and noise.
+        """
+        if not text:
+            return text
+
+        # Remove [INTERNAL ...], [NOTE ...], [REVISION ...]
+        text = re.sub(r"\[.*?(INTERNAL|NOTE|REVISION).*?\]", "", text,
+                      flags=re.IGNORECASE | re.DOTALL)
+
+        # Remove stray END statements (e.g., END OF ANALYSIS, END RESPONSE, etc.)
+        text = re.sub(r"\bEND[^\n]*", "", text, flags=re.IGNORECASE)
+
+        # Remove ALL CAPS leakage blocks like "THIS IS INTERNAL..."
+        text = re.sub(r"[A-Z\s]{8,}", "", text)
+
+        # Clean whitespace
+        return text.strip()
+
     def add_session(self, query: str, advisor_response: str, web_context: Optional[List[Dict]] = None,
-                   data_insights: Optional[str] = None, summary: Optional[str] = None,
-                   user_metadata: Optional[Dict] = None) -> str:
-        """
-        Add a comprehensive financial advisory session to memory.
-        
-        Args:
-            query: Original user query
-            advisor_response: Response from advisor agent
-            web_context: Context from web supplementation agent
-            data_insights: Insights from data analysis agent
-            summary: Pre-generated summary (optional)
-            user_metadata: Additional metadata about the session
-        
-        Returns:
-            Session ID for reference
-        """
+               data_insights: Optional[str] = None, summary: Optional[str] = None,
+               user_metadata: Optional[Dict] = None) -> str:
         try:
+            # Sanitize advisor response
+            advisor_response = self._sanitize_text(advisor_response)
+
             # Create session ID
             session_id = self._generate_session_id(query, advisor_response)
-            
-            # Categorize the session
+
+            # Categorize session
             session_category = self._categorize_session(query + " " + advisor_response)
-            
+
             # Create comprehensive session text for embedding
             full_session_text = self._create_session_text(
                 query, advisor_response, web_context, data_insights
             )
-            
+
+            # Sanitize full session text too
+            full_session_text = self._sanitize_text(full_session_text)
+
             # Generate embeddings
             query_embedding = self.embedding_model.encode(query, convert_to_tensor=False)
             response_embedding = self.embedding_model.encode(advisor_response, convert_to_tensor=False)
             full_embedding = self.embedding_model.encode(full_session_text, convert_to_tensor=False)
-            
-            # Create session data structure
+
+            # Session data structure
             session_data = {
                 "session_id": session_id,
                 "timestamp": datetime.now().isoformat(),
@@ -99,85 +134,83 @@ class MemoryManager:
                     **(user_metadata or {})
                 }
             }
-            
+
             # Add to memory
             self.memory.append(session_data)
             self._save_memory()
-            
+
             print(f"[MemoryManager] Added session {session_id} (category: {session_category})")
             return session_id
-            
+
         except Exception as e:
             print(f"[MemoryManager] Error adding session: {e}")
             return "error_session_" + str(hash(query))[:8]
+
     
     def search_memory(self, query_text: str, top_k: int = 3, 
-                     category_filter: Optional[str] = None,
-                     recency_bias: float = 0.1,
-                     similarity_threshold: float = 0.3) -> List[Dict[str, Any]]:
+                 category_filter: Optional[str] = None,
+                 recency_bias: float = 0.1,
+                     similarity_threshold: float = 0.55) -> List[Dict[str, Any]]:
         """
         Search memory for relevant past sessions with advanced filtering.
-        
+    
         Args:
             query_text: Current query to search for similar sessions
             top_k: Number of top similar sessions to return
-            category_filter: Filter by session category (optional)
+            category_filter: Force filter by session category (optional)
             recency_bias: Weight given to recent sessions (0-1)
             similarity_threshold: Minimum similarity score to include
-        
+    
         Returns:
             List of relevant session data
         """
         try:
             if not self.memory:
                 return []
-            
+
             query_embedding = self.embedding_model.encode(query_text, convert_to_tensor=False)
             query_category = self._categorize_session(query_text)
-            
+
+            # If no explicit filter, force category alignment
+            active_category = category_filter or query_category
+
             scored_sessions = []
-            
             for session in self.memory:
-                # Calculate base similarity
+                # Skip if category doesn't match
+                if session["category"] != active_category:
+                    continue
+
+                # Calculate similarities
                 full_similarity = self._cosine_similarity(
                     query_embedding, session["embeddings"]["full_session"]
                 )
                 query_similarity = self._cosine_similarity(
                     query_embedding, session["embeddings"]["query"]
                 )
-                
-                # Combine similarities (query similarity often more relevant)
+
                 base_score = 0.7 * query_similarity + 0.3 * full_similarity
-                
-                # Apply category boost
-                category_boost = 0.1 if session["category"] == query_category else 0.0
-                
-                # Apply recency bias
                 recency_score = self._calculate_recency_score(session["timestamp"], recency_bias)
-                
-                # Final score
-                final_score = base_score + category_boost + recency_score
-                
-                # Apply filters
+
+                final_score = base_score + recency_score
+
                 if final_score >= similarity_threshold:
-                    if category_filter is None or session["category"] == category_filter:
-                        scored_sessions.append((final_score, session))
-            
-            # Sort by score and return top_k
+                    scored_sessions.append((final_score, session))
+
             scored_sessions.sort(key=lambda x: x[0], reverse=True)
-            
+
             results = []
             for score, session in scored_sessions[:top_k]:
                 result_session = session.copy()
                 result_session["relevance_score"] = float(score)
                 results.append(result_session)
-            
-            print(f"[MemoryManager] Found {len(results)} relevant sessions for query")
+
+            print(f"[MemoryManager] Found {len(results)} relevant sessions in category '{active_category}'")
             return results
-            
+
         except Exception as e:
             print(f"[MemoryManager] Error searching memory: {e}")
             return []
+
     
     def get_recent_sessions(self, days: int = 7, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent sessions within specified days"""

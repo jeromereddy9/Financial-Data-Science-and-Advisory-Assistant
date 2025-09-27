@@ -1,340 +1,413 @@
-# web_model/web_supplementation_agent.py
-import requests
-from bs4 import BeautifulSoup
+﻿# Model/web_model.py - ENHANCED WITH ANTI-HALLUCINATION MEASURES
+
+import yfinance as yf
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-import re
-from urllib.parse import urljoin, urlparse
-import time
+import json
+import os
+import hashlib
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
+import requests
+import investpy  # For dynamic symbol lookup
+
 
 class WebSupplementationAgent:
     def __init__(self, model_name="google/flan-t5-small"):
-        # Using FLAN-T5 for summarization - it's not gated and good at text summarization
         self.model_name = model_name
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
+        # Cache configuration
+        self.cache_dir = "cache"
+        self.cache_ttl_hours = 6
+        self._ensure_cache_dir()
+
+        # Dynamic JSE symbols cache
+        self.jse_symbols_cache = None
+        self.symbols_last_updated = None
+        self.symbols_cache_ttl = 24  # hours
+
+        # Initialize summarization model with fallback
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.model = AutoModelForSeq2SeqLM.from_pretrained(
                 model_name,
                 torch_dtype=self.dtype,
-                device_map="auto" if torch.cuda.is_available() else None
+                device_map="auto" if self.device == "cuda" else None
             ).to(self.device)
+            print(f"[WebSupplementationAgent] Loaded summarization model: {model_name} on {self.device}")
         except Exception as e:
-            print(f"[WebSupplementationAgent] Error loading model {model_name}: {e}")
-            # Fallback to a basic approach without ML summarization
+            print(f"[WebSupplementationAgent] Error loading summarization model {model_name}: {e}")
+            print("[WebSupplementationAgent] Operating without summarization model")
             self.model = None
             self.tokenizer = None
 
-        # Default sources with better search URLs
-        self.sources = {
-            "fin24": "https://www.fin24.com/search?query={query}",
-            "moneyweb": "https://www.moneyweb.co.za/search/{query}/"
-        }
+    def _ensure_cache_dir(self):
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir)
 
-        # Headers to avoid blocking
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
-        }
+    def _get_cache_key(self, symbol: str, data_type: str = "stock") -> str:
+        today = datetime.now().date().isoformat()
+        content = f"{data_type}_{symbol}_{today}"
+        return hashlib.md5(content.encode()).hexdigest()
 
-    def _clean_url(self, url, base_url):
-        """Clean and make URLs absolute"""
-        if not url:
-            return ""
-        
-        # Remove any leading/trailing whitespace
-        url = url.strip()
-        
-        # Make relative URLs absolute
-        if url.startswith('/'):
-            parsed_base = urlparse(base_url)
-            url = f"{parsed_base.scheme}://{parsed_base.netloc}{url}"
-        elif not url.startswith('http'):
-            url = urljoin(base_url, url)
-        
-        return url
+    def _cache_get(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        cache_path = os.path.join(self.cache_dir, f"{cache_key}.json")
+        if os.path.exists(cache_path):
+            mod_time = datetime.fromtimestamp(os.path.getmtime(cache_path))
+            if datetime.now() - mod_time < timedelta(hours=self.cache_ttl_hours):
+                try:
+                    with open(cache_path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception as e:
+                    print(f"[WebSupplementationAgent] Cache read error: {e}")
+                    return None
+        return None
 
-    def _extract_article_content(self, url, source):
-        """Extract main article content from a URL"""
+    def _cache_set(self, cache_key: str, data: Dict[str, Any]):
+        cache_path = os.path.join(self.cache_dir, f"{cache_key}.json")
         try:
-            time.sleep(1)  # Be respectful to servers
-            resp = requests.get(url, timeout=10, headers=self.headers)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, default=str)
+        except Exception as e:
+            print(f"[WebSupplementationAgent] Cache write error: {e}")
+
+    # ========== DYNAMIC SYMBOL MANAGEMENT ==========
+    def get_jse_symbols(self, force_refresh: bool = False) -> List[str]:
+        """Get JSE symbols dynamically from investpy with fallback"""
+        # Check if cache is still valid
+        if (not force_refresh and self.jse_symbols_cache and 
+            self.symbols_last_updated and 
+            (datetime.now() - self.symbols_last_updated) < timedelta(hours=self.symbols_cache_ttl)):
+            return self.jse_symbols_cache
+
+        try:
+            print("[WebSupplementationAgent] Fetching JSE symbols from investpy...")
+            # Try to get symbols from investpy
+            stocks = investpy.get_stocks(country='south africa')
+            jse_symbols = stocks['symbol'].tolist()
             
-            # Remove script and style elements
-            for script in soup(["script", "style", "nav", "footer", "aside"]):
-                script.decompose()
+            # Filter and clean symbols
+            valid_symbols = [sym for sym in jse_symbols if isinstance(sym, str) and len(sym) <= 5 and sym.isalpha()]
             
-            content = ""
+            # Add major JSE stocks as fallback if investpy fails
+            if not valid_symbols:
+                valid_symbols = ['AGL', 'SBK', 'NPN', 'FSR', 'BIL', 'GFI', 'NED', 'MTN', 'VOD', 'SHP', 'WHL', 'TRU']
             
-            # Try common article content selectors
-            article_selectors = [
-                "article", 
-                ".article-content", 
-                ".post-content", 
-                ".content",
-                "[class*='article']",
-                "[class*='story']",
-                "main"
-            ]
+            self.jse_symbols_cache = valid_symbols[:50]  # Limit to top 50
+            self.symbols_last_updated = datetime.now()
             
-            for selector in article_selectors:
-                article_elem = soup.select_one(selector)
-                if article_elem:
-                    # Get all paragraph text
-                    paragraphs = article_elem.find_all(['p', 'div'], recursive=True)
-                    content = ' '.join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
-                    break
-            
-            # Fallback: get all paragraph text from body
-            if not content:
-                paragraphs = soup.find_all('p')
-                content = ' '.join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 50])
-            
-            # Clean up the content
-            content = re.sub(r'\s+', ' ', content)  # Replace multiple whitespace with single space
-            content = content[:2000]  # Limit content length
-            
-            return content if len(content) > 100 else ""  # Only return if substantial content
+            print(f"[WebSupplementationAgent] Loaded {len(self.jse_symbols_cache)} JSE symbols")
+            return self.jse_symbols_cache
             
         except Exception as e:
-            print(f"[WebSupplementationAgent] Error extracting content from {url}: {e}")
-            return ""
+            print(f"[WebSupplementationAgent] Error fetching symbols from investpy: {e}")
+            # Fallback to known symbols
+            fallback_symbols = ['AGL', 'SBK', 'NPN', 'FSR', 'BIL', 'GFI', 'NED', 'MTN', 'VOD', 'SHP']
+            self.jse_symbols_cache = fallback_symbols
+            self.symbols_last_updated = datetime.now()
+            return fallback_symbols
 
-    def fetch_articles(self, query, max_articles=5):
-        """
-        Pull articles from predefined sources based on user query.
-        Returns a list of dicts: {headline, url, source, content}.
-        """
+    def is_valid_jse_symbol(self, symbol: str) -> bool:
+        """Check if symbol is a valid JSE symbol"""
+        valid_symbols = self.get_jse_symbols()
+        return symbol.upper() in [s.upper() for s in valid_symbols]
+
+    def extract_symbols_from_query(self, query: str) -> List[str]:
+        """Extract valid JSE symbols from query text"""
+        valid_symbols = self.get_jse_symbols()
+        found_symbols = []
+        query_upper = query.upper()
+        
+        for symbol in valid_symbols:
+            if symbol.upper() in query_upper:
+                found_symbols.append(symbol)
+        
+        return found_symbols[:3]  # Limit to 3 symbols
+
+    # ========== ENHANCED STOCK DATA WITH DATE VALIDATION ==========
+    def fetch_stock_data(self, symbol: str) -> Dict[str, Any]:
+        """Fetch stock data with date validation and fallback"""
+        if not self.is_valid_jse_symbol(symbol):
+            return self._create_error_stock_data(symbol, f"Invalid JSE symbol: {symbol}")
+
+        jse_symbol = f"{symbol}.JO"
+        cache_key = self._get_cache_key(jse_symbol, "stock")
+
+        # Check cache first with date validation
+        cached = self._cache_get(cache_key)
+        if cached and self._is_data_current(cached.get('last_updated')):
+            print(f"[WebSupplementationAgent] Using cached data for {jse_symbol}")
+            return cached
+
+        try:
+            print(f"[WebSupplementationAgent] Fetching fresh data for {jse_symbol}")
+            ticker = yf.Ticker(jse_symbol)
+            
+            # Try different periods to get current data
+            for period in ["1d", "5d", "1mo"]:
+                hist = ticker.history(period=period)
+                if not hist.empty and len(hist) > 1:
+                    break
+            
+            if hist.empty:
+                # Try to use cached data even if stale
+                if cached:
+                    print(f"[WebSupplementationAgent] Using stale cached data for {jse_symbol}")
+                    cached['data_status'] = 'stale'
+                    return cached
+                raise ValueError("No historical data available")
+
+            # Validate data is current (within 2 days for market data)
+            latest_date = hist.index[-1].date()
+            current_date = datetime.now().date()
+            days_diff = (current_date - latest_date).days
+            
+            if days_diff > 2:
+                print(f"[WebSupplementationAgent] Data for {symbol} is {days_diff} days old")
+            
+            # Calculate metrics
+            current_price = float(hist["Close"][-1])
+            price_1d_ago = float(hist["Close"][-2]) if len(hist) >= 2 else current_price
+            price_1w_ago = float(hist["Close"][-6]) if len(hist) >= 6 else price_1d_ago
+            price_1m_ago = float(hist["Close"][0]) if len(hist) >= 20 else price_1w_ago
+            
+            daily_change = ((current_price / price_1d_ago) - 1) * 100 if price_1d_ago != current_price else 0.0
+            weekly_change = ((current_price / price_1w_ago) - 1) * 100 if price_1w_ago != current_price else 0.0
+            monthly_change = ((current_price / price_1m_ago) - 1) * 100 if price_1m_ago != current_price else 0.0
+
+            # Get company info
+            info = ticker.info
+            pe_ratio = info.get('trailingPE', None)
+            
+            stock_data = {
+                "symbol": symbol.upper(),  # Force uppercase for consistency
+                "jse_code": jse_symbol,
+                "company_name": info.get('longName', symbol),
+                "sector": info.get('sector', 'Unknown'),
+                "current_price": round(current_price, 2),
+                "daily_change": round(daily_change, 2),
+                "weekly_change": round(weekly_change, 2),
+                "monthly_change": round(monthly_change, 2),
+                "currency": "ZAR",
+                "source": "Yahoo Finance",
+                "data_date": latest_date.isoformat(),
+                "data_freshness": "current" if days_diff <= 2 else f"{days_diff} days old",
+                "last_updated": datetime.now().isoformat(),
+                "data_status": "fresh",
+                "pe_ratio": round(pe_ratio, 2) if pe_ratio is not None else "N/A"
+            }
+
+            self._cache_set(cache_key, stock_data)
+            return stock_data
+
+        except Exception as e:
+            print(f"[WebSupplementationAgent] Error fetching {jse_symbol}: {e}")
+            # Return cached data if available, even if stale
+            if cached:
+                print(f"[WebSupplementationAgent] Using cached fallback for {jse_symbol}")
+                cached['data_status'] = 'fallback'
+                return cached
+            return self._create_error_stock_data(symbol, str(e))
+
+    def _is_data_current(self, last_updated: str) -> bool:
+        """Check if data is current enough to use"""
+        if not last_updated:
+            return False
+        
+        try:
+            last_update = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+            return (datetime.now() - last_update) < timedelta(hours=self.cache_ttl_hours)
+        except:
+            return False
+
+    def _create_error_stock_data(self, symbol: str, error: str) -> Dict[str, Any]:
+        """Create error stock data"""
+        return {
+            "symbol": symbol.upper(),
+            "jse_code": f"{symbol}.JO",
+            "company_name": f"{symbol} (Error)",
+            "current_price": "N/A",
+            "daily_change": "N/A",
+            "weekly_change": "N/A",
+            "monthly_change": "N/A",
+            "currency": "ZAR",
+            "source": "Error",
+            "error": error,
+            "data_status": "error",
+            "last_updated": datetime.now().isoformat()
+        }
+
+    def _get_overall_data_status(self, stock_data: List[Dict]) -> str:
+        """Determine overall data freshness status"""
+        if not stock_data:
+            return "no_data"
+        
+        statuses = [s.get('data_status', 'unknown') for s in stock_data]
+        
+        if any(s == 'error' for s in statuses):
+            return "partial_error"
+        elif any(s == 'stale' for s in statuses):
+            return "partially_stale"
+        elif all(s == 'fresh' for s in statuses):
+            return "fresh"
+        else:
+            return "mixed"
+
+    # ========== ENHANCED CONTEXT METHODS ==========
+    def get_jse_companies_financials(self, tickers: List[str]) -> List[Dict[str, Any]]:
+        """Fetch data for multiple tickers with validation"""
         results = []
-        query_formatted = query.replace(" ", "+")
-        
-        for source, url_template in self.sources.items():
-            search_url = url_template.format(query=query_formatted)
-            try:
-                resp = requests.get(search_url, timeout=10, headers=self.headers)
-                resp.raise_for_status()
-                soup = BeautifulSoup(resp.text, "html.parser")
-                articles = []
-
-                # Source-specific article extraction
-                if source == "fin24":
-                    # Look for article links in search results
-                    article_links = soup.find_all('a', href=True)
-                    for link in article_links[:max_articles]:
-                        href = link.get('href', '')
-                        if '/news/' in href or '/markets/' in href or '/economy/' in href:
-                            headline = link.get_text(strip=True)
-                            if headline and len(headline) > 10:  # Filter out short/empty headlines
-                                full_url = self._clean_url(href, "https://www.fin24.com")
-                                articles.append({
-                                    "headline": headline,
-                                    "url": full_url,
-                                    "source": source
-                                })
-                                if len(articles) >= max_articles:
-                                    break
-
-                elif source == "moneyweb":
-                    # Look for article links in search results  
-                    article_links = soup.find_all('a', href=True)
-                    for link in article_links[:max_articles]:
-                        href = link.get('href', '')
-                        if 'moneyweb.co.za' in href and ('/news/' in href or '/investing/' in href or '/markets/' in href):
-                            headline = link.get_text(strip=True)
-                            if headline and len(headline) > 10:
-                                full_url = self._clean_url(href, "https://www.moneyweb.co.za")
-                                articles.append({
-                                    "headline": headline,
-                                    "url": full_url,
-                                    "source": source
-                                })
-                                if len(articles) >= max_articles:
-                                    break
-
-                # Extract content for each article
-                for article in articles:
-                    if article['url']:
-                        content = self._extract_article_content(article['url'], source)
-                        article['content'] = content
-                    else:
-                        article['content'] = ""
-                
-                # Only keep articles with substantial content
-                articles = [a for a in articles if a.get('content', '') and len(a['content']) > 100]
-                results.extend(articles)
-                
-            except requests.exceptions.HTTPError as e:
-                print(f"[WebSupplementationAgent] HTTP Error {e.response.status_code} from {source}: {e}")
-            except Exception as e:
-                print(f"[WebSupplementationAgent] Error fetching from {source}: {e}")
-
-        return results[:max_articles]  # Limit total results
-
-    def summarize_articles(self, articles, max_length=150):
-        """
-        Summarize a list of articles using the LM or fallback method.
-        Always returns list of dicts with 'summary'.
-        """
-        summaries = []
-        
-        for article in articles:
-            content = article.get("content", "")
-            headline = article.get("headline", "")
-            
-            if not content and not headline:
-                continue
-                
-            try:
-                # Use the full content for summarization, fallback to headline
-                text_to_summarize = content if content else headline
-                
-                if self.model and self.tokenizer and len(text_to_summarize) > 100:
-                    # Use ML model for summarization
-                    prompt = f"Summarize this financial news article: {text_to_summarize[:1500]}"
-                    
-                    inputs = self.tokenizer(
-                        prompt,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=512,
-                        padding=True
-                    ).to(self.device)
-
-                    with torch.no_grad():
-                        summary_ids = self.model.generate(
-                            inputs.input_ids,
-                            max_length=max_length,
-                            min_length=30,
-                            length_penalty=2.0,
-                            num_beams=3,
-                            early_stopping=True,
-                            do_sample=False
-                        )
-
-                    summary = self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-                    
-                    # Clean up the summary
-                    summary = summary.replace(prompt, "").strip()
-                    if not summary:
-                        summary = self._extractive_summary(text_to_summarize)
-                        
-                else:
-                    # Fallback: extractive summary
-                    summary = self._extractive_summary(text_to_summarize)
-                
-                article["summary"] = summary
-                
-            except Exception as e:
-                print(f"[WebSupplementationAgent] Error summarizing article: {e}")
-                # Fallback to extractive summary
-                article["summary"] = self._extractive_summary(content or headline)
-            
-            summaries.append(article)
-            
-        return summaries
-
-    def _extractive_summary(self, text, max_sentences=3):
-        """
-        Create an extractive summary by taking the first few sentences.
-        Fallback method when ML summarization fails.
-        """
-        if not text:
-            return "No content available."
-        
-        # Split into sentences
-        sentences = re.split(r'[.!?]+', text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
-        
-        # Take first few sentences that seem substantial
-        summary_sentences = []
-        for sentence in sentences[:max_sentences]:
-            if len(sentence) > 30:  # Only substantial sentences
-                summary_sentences.append(sentence)
-        
-        summary = '. '.join(summary_sentences)
-        return summary[:500] + "..." if len(summary) > 500 else summary
-
-    # Quick patch for Web Agent to provide fallback data
-
-    def get_relevant_info(self, user_query, max_articles=5):
-        """
-        Fetch and summarize articles based on user query.
-        Returns a list of dicts with 'headline', 'url', 'source', 'summary', 'content'.
-        """
-        print(f"[WebSupplementationAgent] Fetching articles for query: '{user_query}'")
-    
-        articles = self.fetch_articles(user_query, max_articles)
-        if not articles:
-            print("[WebSupplementationAgent] No articles found, using fallback data.")
-        
-            # Provide contextual fallback based on query keywords
-            if "portfolio" in user_query.lower() and "diversif" in user_query.lower():
-                fallback_articles = [
-                    {
-                        "headline": "JSE Portfolio Diversification: Expert Tips for South African Investors",
-                        "url": "https://example.com/jse-diversification",
-                        "source": "fallback",
-                        "summary": "Financial experts recommend diversifying JSE portfolios across sectors including mining (AGL, BIL), banking (SBK, FSR), telecommunications (MTN, VOD), and retail (SHP, TRU) to reduce concentration risk and improve long-term returns.",
-                        "content": "Diversification across JSE sectors is crucial for South African investors to manage risk effectively in volatile markets."
-                    },
-                    {
-                        "headline": "Banking Sector Concentration Risk on JSE: What Investors Need to Know", 
-                        "url": "https://example.com/jse-banking-risk",
-                        "source": "fallback",
-                        "summary": "Holding only banking stocks (SBK, FSR, NED) exposes investors to sector-specific risks including interest rate changes, regulatory shifts, and economic downturns. Diversification into mining, retail, and technology sectors can help mitigate these risks.",
-                        "content": "JSE banking sector concentration carries significant risks that can be mitigated through proper diversification strategies."
-                    }
-                ]
-                return fallback_articles
-        
-            elif "bank" in user_query.lower() and "jse" in user_query.lower():
-                fallback_articles = [
-                    {
-                        "headline": "JSE Banking Stocks Analysis: SBK, FSR, NED Performance Review",
-                        "url": "https://example.com/jse-banking-analysis", 
-                        "source": "fallback",
-                        "summary": "Major JSE banking stocks include Standard Bank (SBK), FirstRand (FSR), Nedbank (NED), and Capitec (CPI). These stocks are sensitive to interest rate cycles, credit loss provisions, and South African economic conditions.",
-                        "content": "JSE banking sector represents a significant portion of the market but requires careful analysis of macroeconomic factors."
-                    }
-                ]
-                return fallback_articles
-        
+        for ticker in tickers:
+            if ticker and self.is_valid_jse_symbol(ticker):
+                data = self.fetch_stock_data(ticker)
+                results.append(data)
             else:
-                # Generic JSE fallback
-                fallback_articles = [
-                    {
-                        "headline": "JSE Market Update: Key Trends and Investment Opportunities",
-                        "url": "https://example.com/jse-market-update",
-                        "source": "fallback", 
-                        "summary": "The Johannesburg Stock Exchange continues to offer diverse investment opportunities across mining, banking, retail, and technology sectors. Investors should consider rand volatility, commodity prices, and local economic conditions when making investment decisions.",
-                        "content": "JSE market analysis considers multiple factors including commodity prices, rand strength, and local economic indicators."
-                    }
-                ]
-                return fallback_articles
+                print(f"[WebSupplementationAgent] Skipping invalid ticker: {ticker}")
+        return results
+
+    def get_api_context(self, query: str, tickers: List[str] = None) -> Dict[str, Any]:
+        """CRITICAL METHOD - Get comprehensive API context with symbol validation"""
+        if tickers is None:
+            tickers = self.extract_symbols_from_query(query)
+        else:
+            # Validate provided tickers against investpy list
+            tickers = [t for t in tickers if self.is_valid_jse_symbol(t)]
+        
+        stock_data = self.get_jse_companies_financials(tickers)
+        
+        # Add current time and date for the model to use
+        current_time = datetime.now()
+        
+        return {
+            "stock_data": stock_data,
+            "query_tickers": tickers,
+            "symbols_used": [s['symbol'] for s in stock_data if s.get('symbol') and not s.get('error')],
+            "current_date": current_time.strftime("%Y-%m-%d"),
+            "current_time": current_time.strftime("%H:%M"),
+            "market_day": current_time.strftime("%A"),
+            "data_timestamp": current_time.isoformat(),
+            "data_status": self._get_overall_data_status(stock_data)
+        }
+
+    def get_relevant_info(self, user_query: str, tickers: List[str]) -> List[Dict[str, Any]]:
+        """Get relevant info with symbol validation"""
+        if tickers:
+            # Validate tickers
+            tickers = [t for t in tickers if self.is_valid_jse_symbol(t)]
+        
+        financial_data = self.get_jse_companies_financials(tickers) if tickers else []
+        
+        # If no specific tickers, provide some general JSE market context
+        if not tickers or not financial_data:
+            print("[WebSupplementationAgent] No specific tickers, using default JSE stocks")
+            default_tickers = ['SBK', 'AGL', 'NPN']  # Major JSE stocks for context
+            financial_data = self.get_jse_companies_financials(default_tickers)
+        
+        enhanced_articles = []
+        for data in financial_data:
+            if data.get('error'):
+                continue  # Skip error responses
+                
+            # Create article-like structure from stock data
+            article = {
+                "headline": f"{data.get('symbol')} - {data.get('company_name', 'JSE Stock')}",
+                "summary": f"Price: ZAR {data.get('current_price', 'N/A')} ({data.get('daily_change', 'N/A')}% daily)",
+                "source": data.get('source', 'Yahoo Finance'),
+                "symbol": data.get('symbol'),
+                "current_price": data.get('current_price'),
+                "data_status": data.get('data_status', 'unknown'),
+                "data_date": data.get('data_date', 'Unknown')
+            }
+            enhanced_articles.append(article)
+        
+        return enhanced_articles
+
+    def _summarize_content(self, text: str, max_length: int = 150) -> str:
+        """Use the summarization model to summarize content"""
+        if not self.model or not self.tokenizer:
+            return text[:max_length] + "..." if len(text) > max_length else text
+            
+        try:
+            # Prepare input for summarization
+            input_text = f"summarize: {text}"
+            inputs = self.tokenizer(input_text, return_tensors="pt", max_length=512, truncation=True).to(self.device)
+            
+            with torch.no_grad():
+                summary_ids = self.model.generate(
+                    inputs.input_ids,
+                    max_length=max_length,
+                    min_length=50,
+                    length_penalty=2.0,
+                    num_beams=4,
+                    early_stopping=True
+                )
+            
+            summary = self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            return summary
+        except Exception as e:
+            print(f"[WebSupplementationAgent] Summarization error: {e}")
+            return text[:max_length] + "..." if len(text) > max_length else text
+
+    def get_api_context(self, query: str, tickers: List[str] = None) -> Dict[str, Any]:
+        """Get comprehensive API context with symbol validation"""
+        print(f"[WebSupplementationAgent] get_api_context called with query: {query}")
     
-        summarized_articles = self.summarize_articles(articles)
+        if tickers is None:
+            # Extract tickers from query
+            tickers = []
+            query_upper = query.upper()
+            common_jse = ['MTN', 'AGL', 'SBK', 'NPN', 'FSR', 'BIL', 'GFI', 'NED', 'VOD', 'SHP']
+            for symbol in common_jse:
+                if symbol in query_upper:
+                    tickers.append(symbol)
     
-        # Ensure all items are properly formatted
-        cleaned_articles = []
-        for a in summarized_articles:
-            if isinstance(a, dict):
-                cleaned_article = {
-                    "headline": a.get("headline", "No headline"),
-                    "url": a.get("url", ""),
-                    "source": a.get("source", "unknown"),
-                    "summary": a.get("summary", "No summary available"),
-                    "content": a.get("content", "")
-                }
-                cleaned_articles.append(cleaned_article)
+        print(f"[WebSupplementationAgent] Using tickers: {tickers}")
     
-        print(f"[WebSupplementationAgent] Returning {len(cleaned_articles)} processed articles.")
-        return cleaned_articles
+        # Get stock data
+        stock_data = []
+        for ticker in tickers[:3]:  # Limit to 3
+            try:
+                data = self.fetch_stock_data(ticker)
+                if not data.get('error'):
+                    stock_data.append(data)
+                    print(f"[WebSupplementationAgent] Got data for {ticker}: R{data.get('current_price', 'N/A')}")
+            except Exception as e:
+                print(f"[WebSupplementationAgent] Error fetching {ticker}: {e}")
+    
+        # Add current time
+        current_time = datetime.now()
+    
+        result = {
+            "stock_data": stock_data,
+            "query_tickers": tickers,
+            "symbols_used": [s['symbol'] for s in stock_data if s.get('symbol')],
+            "current_date": current_time.strftime("%Y-%m-%d"),
+            "current_time": current_time.strftime("%H:%M"),
+            "market_day": current_time.strftime("%A"),
+            "data_timestamp": current_time.isoformat(),
+            "data_status": "fresh" if stock_data else "no_data"
+        }
+    
+        print(f"[WebSupplementationAgent] Returning context with {len(stock_data)} stocks")
+        return result
+
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get enhanced model info with symbol data"""
+        symbol_count = len(self.get_jse_symbols()) if self.jse_symbols_cache else 0
+        
+        return {
+            "model_name": self.model_name,
+            "jse_symbols_available": symbol_count,
+            "symbols_last_updated": self.symbols_last_updated.isoformat() if self.symbols_last_updated else "Never",
+            "cache_status": "Active",
+            "features": [
+                "Dynamic JSE symbol lookup via investpy",
+                "Date-validated stock data",
+                "Intelligent caching with freshness tracking",
+                "Symbol validation and correction",
+                "Anti-hallucination measures"
+            ],
+            "status": "Ready"
+        }

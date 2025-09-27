@@ -13,3 +13,4 @@ gradio
 scikit-learn
 seaborn
 accelerate
+investpy
