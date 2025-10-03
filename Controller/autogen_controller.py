@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import os
 import json
 import re
@@ -22,7 +22,7 @@ class FinancialAdvisoryController:
     """
     
     def __init__(self):
-        """Initialize all agents with proper error handling and dependency injection"""
+        """Initialize all agents with proper error handling"""
         self.agents = {}
         self._initialize_agents()
         
@@ -42,98 +42,63 @@ class FinancialAdvisoryController:
         }
     
     def _initialize_agents(self):
-        """Initialize all agents with proper dependency injection"""
+        """Initialize all agents with proper error handling"""
         try:
             print("[Controller] Initializing Financial Advisory System...")
             
-            # Initialize Web Supplementation Agent FIRST (dependency for AdvisorAgent)
-            web_agent = None
+            # Initialize Web Supplementation Agent
             try:
-                web_agent = WebSupplementationAgent()
-                self.agents['web'] = web_agent
-                print("[Controller] ✓ Web Supplementation Agent loaded")
+                self.agents['web'] = WebSupplementationAgent()
+                print("[Controller] ? Web Supplementation Agent loaded")
             except Exception as e:
-                print(f"[Controller] ✗ Failed to load Web Agent: {e}")
+                print(f"[Controller] ? Failed to load Web Agent: {e}")
                 self.agents['web'] = None
             
             # Initialize Embedding Agent
             try:
                 self.agents['embedding'] = EmbeddingAgent()
-                print("[Controller] ✓ Embedding Agent loaded")
+                print("[Controller] ? Embedding Agent loaded")
             except Exception as e:
-                print(f"[Controller] ✗ Failed to load Embedding Agent: {e}")
+                print(f"[Controller] ? Failed to load Embedding Agent: {e}")
                 self.agents['embedding'] = None
             
-            # Initialize Memory Manager (use the same embedding model name)
+            # Initialize Memory Manager (depends on embedding agent)
             try:
-                embedding_agent = self.agents.get('embedding')
-                embedding_model_name = embedding_agent.model_name if embedding_agent else "all-MiniLM-L6-v2"
-                self.agents['memory'] = MemoryManager(embedding_model_name=embedding_model_name)
-                print("[Controller] ✓ Memory Manager loaded")
+                self.agents['memory'] = MemoryManager()
+                print("[Controller] ? Memory Manager loaded")
             except Exception as e:
-                print(f"[Controller] ✗ Failed to load Memory Manager: {e}")
+                print(f"[Controller] ? Failed to load Memory Manager: {e}")
                 self.agents['memory'] = None
             
-            # Initialize Advisor Agent WITH DEPENDENCY INJECTION - FIXED
+            # Initialize Advisor Agent
             try:
-                # Pass the web_agent instance to AdvisorAgent constructor
-                self.agents['advisor'] = AdvisorAgent(web_agent=web_agent)
-                print("[Controller] ✓ Advisor Agent loaded with dependency injection")
+                self.agents['advisor'] = AdvisorAgent()
+                print("[Controller] ? Advisor Agent loaded")
             except Exception as e:
-                print(f"[Controller] ✗ Failed to load Advisor Agent: {e}")
-                # Try fallback without web_agent
-                try:
-                    self.agents['advisor'] = AdvisorAgent(web_agent=None)
-                    print("[Controller] ✓ Advisor Agent loaded (without web agent)")
-                except Exception as e2:
-                    print(f"[Controller] ✗ Failed to load Advisor Agent even with fallback: {e2}")
-                    self.agents['advisor'] = None
+                print(f"[Controller] ? Failed to load Advisor Agent: {e}")
+                self.agents['advisor'] = None
             
             # Initialize Data Agent
             try:
-                # Try with web_agent parameter if supported
-                if hasattr(DataAgent, '__init__') and 'web_agent' in DataAgent.__init__.__code__.co_varnames:
-                    self.agents['data'] = DataAgent(web_agent=web_agent)
-                else:
-                    self.agents['data'] = DataAgent()
-                print("[Controller] ✓ Data Science Agent loaded")
+                self.agents['data'] = DataAgent()
+                print("[Controller] ? Data Science Agent loaded")
             except Exception as e:
-                print(f"[Controller] ✗ Failed to load Data Agent: {e}")
+                print(f"[Controller] ? Failed to load Data Agent: {e}")
                 self.agents['data'] = None
             
             # Initialize Summarizer Agent
             try:
                 self.agents['summarizer'] = SummarizerAgent()
-                print("[Controller] ✓ Summarizer Agent loaded")
+                print("[Controller] ? Summarizer Agent loaded")
             except Exception as e:
-                print(f"[Controller] ✗ Failed to load Summarizer Agent: {e}")
+                print(f"[Controller] ? Failed to load Summarizer Agent: {e}")
                 self.agents['summarizer'] = None
             
-            # Verify dependencies are properly injected
-            self._verify_dependencies()
-            
-            successful_agents = sum(1 for agent in self.agents.values() if agent is not None)
-            print(f"[Controller] System initialized with {successful_agents}/6 agents")
+            print(f"[Controller] System initialized with {sum(1 for agent in self.agents.values() if agent is not None)}/6 agents")
             
         except Exception as e:
             print(f"[Controller] Critical error during initialization: {e}")
-            traceback.print_exc()
             raise
-    
-    def _verify_dependencies(self):
-        """Verify that all dependencies are properly injected"""
-        advisor_agent = self.agents.get('advisor')
-        web_agent = self.agents.get('web')
-        
-        if advisor_agent and hasattr(advisor_agent, 'web_agent'):
-            if advisor_agent.web_agent is not None:
-                print("[Controller] ✓ AdvisorAgent web_agent dependency properly injected")
-            else:
-                print("[Controller] ⚠ AdvisorAgent web_agent dependency is None (API features disabled)")
-        
-        # Check if other agents need dependency verification
-        if self.agents.get('memory') and hasattr(self.agents['memory'], 'embedding_agent'):
-            print("[Controller] ✓ MemoryManager embedding_agent dependency verified")
     
     def process_user_query(self, user_query: str, user_metadata: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -209,9 +174,7 @@ class FinancialAdvisoryController:
             return []
         
         try:
-            # Extract tickers for more targeted search
-            tickers = self._extract_stock_symbols(user_query)
-            web_articles = self.agents['web'].get_relevant_info(user_query, tickers)
+            web_articles = self.agents['web'].get_relevant_info(user_query, max_articles=5)
             return web_articles if web_articles else []
         except Exception as e:
             print(f"[Controller] Error fetching web context: {e}")
@@ -240,14 +203,16 @@ class FinancialAdvisoryController:
             return "Advisor agent not available. Please contact system administrator."
         
         try:
-            # Use the improved method signature that matches AdvisorAgent
-            # The AdvisorAgent now accepts context parameter
-            context = {
+            # Structure context for the improved Advisor Agent
+            structured_context = {
                 'web_context': web_context,
                 'memory_context': memory_context
             }
             
-            advisor_response = self.agents['advisor'].get_financial_advice(user_query, context)
+            advisor_response = self.agents['advisor'].get_financial_advice(
+                user_query, 
+                context=structured_context
+            )
             
             return advisor_response
             
@@ -286,18 +251,14 @@ class FinancialAdvisoryController:
                 'query_context': user_query
             }
             
-            # Generate analysis code (check if method exists)
-            analysis_code = ""
-            if hasattr(self.agents['data'], 'generate_analysis_code'):
-                analysis_code = self.agents['data'].generate_analysis_code(analysis_request)
+            # Generate analysis code
+            analysis_code = self.agents['data'].generate_analysis_code(analysis_request)
             
             # Generate data insights
-            data_insights = ""
-            if hasattr(self.agents['data'], 'generate_data_insights'):
-                data_insights = self.agents['data'].generate_data_insights(
-                    f"Query: {user_query} | Response: {advisor_response[:200]}...",
-                    analysis_type
-                )
+            data_insights = self.agents['data'].generate_data_insights(
+                f"Query: {user_query} | Response: {advisor_response[:200]}...",
+                analysis_type
+            )
             
             return {
                 'analysis_code': analysis_code,
@@ -343,13 +304,11 @@ class FinancialAdvisoryController:
                 web_summaries = [article.get('summary', '') for article in web_context[:3]]
                 web_context_text = ' '.join(web_summaries)
             
-            executive_summary = {}
-            if hasattr(self.agents['summarizer'], 'create_executive_summary'):
-                executive_summary = self.agents['summarizer'].create_executive_summary(
-                    advisor_response=advisor_response,
-                    data_insights=data_insights_text,
-                    context_info=web_context_text
-                )
+            executive_summary = self.agents['summarizer'].create_executive_summary(
+                advisor_response=advisor_response,
+                data_insights=data_insights_text,
+                context_info=web_context_text
+            )
             
             return {
                 "summary": summary,
