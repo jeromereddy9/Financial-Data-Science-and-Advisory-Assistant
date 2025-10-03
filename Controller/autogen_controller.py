@@ -56,22 +56,22 @@ class FinancialAdvisoryController:
             print("[Controller] Initializing Financial Advisory System...")
             
             self.agents['web'] = WebSupplementationAgent()
-            print("[Controller] ? Web Supplementation Agent loaded")
+            print("[Controller] ✔ Web Supplementation Agent loaded")
             
             self.agents['embedding'] = EmbeddingAgent()
-            print("[Controller] ? Embedding Agent loaded")
+            print("[Controller] ✔ Embedding Agent loaded")
             
             self.agents['memory'] = MemoryManager()
-            print("[Controller] ? Memory Manager loaded")
+            print("[Controller] ✔ Memory Manager loaded")
             
             self.agents['advisor'] = AdvisorAgent()
-            print("[Controller] ? Advisor Agent loaded")
+            print("[Controller] ✔ Advisor Agent loaded")
             
             self.agents['data'] = DataAgent()
-            print("[Controller] ? Data Science Agent loaded")
+            print("[Controller] ✔ Data Science Agent loaded")
             
             self.agents['summarizer'] = SummarizerAgent()
-            print("[Controller] ? Summarizer Agent loaded")
+            print("[Controller] ✔ Summarizer Agent loaded")
             
             print(f"[Controller] System initialized with {sum(1 for agent in self.agents.values() if agent is not None)}/6 agents")
             
@@ -167,6 +167,10 @@ class FinancialAdvisoryController:
         """Classify the type of financial request"""
         query_lower = query.lower()
         
+        # **FIX**: Prioritize stock_analysis if a ticker is present.
+        if self._is_analytical_query(query):
+            return "stock_analysis"
+            
         for request_type, keywords in self.request_types.items():
             if any(keyword in query_lower for keyword in keywords):
                 return request_type

@@ -63,7 +63,7 @@ class WebSupplementationAgent:
 
     def get_structured_market_data(self, tickers: List[str], invalid_tickers: List[str] = None) -> str:
         """
-        **MODIFIED**: Fetches data, adds a timestamp, and includes a warning for invalid tickers.
+        **MODIFIED**: Fetches data including the company's full name, adds a timestamp, and includes a warning for invalid tickers.
         """
         data_str = ""
         
@@ -71,30 +71,32 @@ class WebSupplementationAgent:
             jse_tickers = [ticker.upper() + ".JO" for ticker in tickers]
             data_str += "LATEST JSE MARKET DATA:\n"
             try:
-                data = yf.download(jse_tickers, period="2d", progress=False, auto_adjust=True, group_by='ticker')
+                # Use a short period to get the latest data efficiently
+                data = yf.download(jse_tickers, period="5d", progress=False, auto_adjust=True, group_by='ticker')
                 
                 if not data.empty:
                     for ticker_jo in jse_tickers:
                         stock_code = ticker_jo.replace(".JO", "")
                         try:
+                            # Check if data for the ticker exists and is not all NaN
                             if ticker_jo in data.columns and not data[ticker_jo]['Close'].isnull().all():
-                                latest = data[ticker_jo].iloc[-1]
-                                # **NEW**: Extract the date from the DataFrame index.
+                                latest = data[ticker_jo].dropna().iloc[-1]
                                 date_updated = latest.name.strftime('%Y-%m-%d')
+                                
+                                # Fetch Ticker info for the long name
                                 info = yf.Ticker(ticker_jo).info
+                                long_name = info.get('longName', stock_code)
                                 
-                                fifty_two_week_low = info.get('fiftyTwoWeekLow', 0)
-                                fifty_two_week_high = info.get('fiftyTwoWeekHigh', 0)
-                                
-                                # **MODIFIED**: Added the timestamp to the output string.
+                                # **MODIFIED**: Added the company's long name and timestamp to the output string.
                                 data_str += (
-                                    f"- {stock_code}: Last Price: R{latest['Close']:.2f} (as of {date_updated}), "
+                                    f"- {stock_code} ({long_name}): Last Price: R{latest['Close']:.2f} (as of {date_updated}), "
                                     f"Day's Range: R{latest['Low']:.2f} - R{latest['High']:.2f}, "
                                     f"Volume: {latest['Volume']:,.0f}\n"
                                 )
                             else:
                                 data_str += f"- {stock_code}: No recent data found. The ticker may be invalid or delisted.\n"
-                        except Exception:
+                        except Exception as e:
+                            print(f"[WebSupplementationAgent] Error processing data for {ticker_jo}: {e}")
                             data_str += f"- {stock_code}: Could not process data for this ticker.\n"
             except Exception as e:
                 print(f"[WebSupplementationAgent] yfinance download error: {e}")
@@ -104,14 +106,14 @@ class WebSupplementationAgent:
         if invalid_tickers:
             data_str += f"\nNOTICE: The following tickers were ignored as they are not recognized as supported JSE stocks: {', '.join(invalid_tickers)}."
         
-        if not data_str:
+        if not data_str.strip():
             return "No market data could be retrieved for the query."
 
         return data_str
 
     def get_relevant_info(self, user_query: str, max_articles: int = 3) -> Dict[str, Any]:
         """
-        **MODIFIED**: Main entry point now handles both valid and invalid tickers.
+        **MODIFIED**: Main entry point now handles both valid and invalid tickers gracefully.
         """
         print(f"[WebSupplementationAgent] Fetching external context for query: '{user_query}'")
         
@@ -129,7 +131,6 @@ class WebSupplementationAgent:
             "market_data": market_data_str
         }
 
-    # ... (The rest of the file remains unchanged)
     def _clean_url(self, url, base_url):
         """Clean and make URLs absolute"""
         if not url:

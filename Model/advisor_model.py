@@ -1,4 +1,4 @@
-﻿# Model/advisor_model.py - FIXED VERSION
+﻿# Model/advisor_model.py - FINAL FIXED VERSION
 
 import os
 import warnings
@@ -25,7 +25,8 @@ class AdvisorAgent:
             return self
 
         def add_context(self, context_str: str) -> 'AdvisorAgent.PromptBuilder':
-            self.parts.append(f"**CONTEXTUAL INFORMATION:**\n{context_str}")
+            if context_str and context_str.strip():
+                self.parts.append(f"**CONTEXTUAL INFORMATION:**\n{context_str}")
             return self
 
         def add_grounding_rules(self) -> 'AdvisorAgent.PromptBuilder':
@@ -33,8 +34,10 @@ class AdvisorAgent:
             self.parts.append(
                 "**ANALYTICAL FRAMEWORK (Follow these rules strictly):**\n"
                 "1.  **Data Grounding**: Every analytical statement you make **must** be directly supported by the information in the 'CONTEXTUAL INFORMATION' section.\n"
-                "2.  **Acknowledge Gaps**: If the user's query requires information not present in the context, you **must** state that the specific information is missing.\n"
-                "3.  **Synthesize, Don't Invent**: Your role is to synthesize the provided data, not to add external knowledge or make assumptions."
+                "2.  **Acknowledge Gaps**: If the user's query requires information not present in the context (e.g., historical trends), you **must** state that the specific information is missing.\n"
+                "3.  **Synthesize, Don't Invent**: Your role is to synthesize the provided data, not to add external knowledge or make assumptions.\n"
+                # **FIX**: New rule to encourage interpretation over mere repetition.
+                "4.  **Interpret, Don't Just Repeat**: Explain what the provided metrics (e.g., closing price, day's range) indicate about the stock's recent activity, volatility, or stability. Provide a brief, grounded interpretation of the data."
             )
             return self
 
@@ -43,7 +46,8 @@ class AdvisorAgent:
                 "**STRICT REQUIREMENTS:**\n"
                 "-   Directly address the user's question below.\n"
                 "-   Maintain a professional, factual, and impartial tone.\n"
-                "-   Keep the response under 250 words."
+                "-   Do not repeat any headers or instructions from this prompt in your response.\n"
+                "-   Ensure the response is a single, coherent paragraph and does not contain fragments of other potential queries."
             )
             return self
         
@@ -51,19 +55,12 @@ class AdvisorAgent:
             self.parts.append(f'**USER QUESTION:** "{query}"')
             return self
 
-        def add_final_instruction_template(self) -> 'AdvisorAgent.PromptBuilder':
+        def add_report_header(self) -> 'AdvisorAgent.PromptBuilder':
             """
-            Provides a structured template that is less likely to be leaked
-            and encourages a more nuanced interpretation.
+            Provides a header for the model to write under, rather than an
+            instruction to copy. This prevents prompt leakage.
             """
-            self.parts.append(
-                "**JSE FINANCIAL ANALYSIS (Complete the following two sections):**\n\n"
-                "**1. Factual Observation:**\n"
-                # The model will fill this in based on the grounding rules.
-                "\n\n"
-                "**2. Analyst's Interpretation & Outlook:**\n"
-                # This new title encourages forward-looking (but still grounded) commentary.
-            )
+            self.parts.append("**JSE Analyst's Report:**")
             return self
 
         def build(self) -> str:
@@ -165,7 +162,7 @@ class AdvisorAgent:
                 .add_grounding_rules()
                 .add_strict_requirements()
                 .add_user_query(query)
-                .add_final_instruction_template()
+                .add_report_header()
                 .build()
             )
             
@@ -181,11 +178,17 @@ class AdvisorAgent:
                     repetition_penalty=1.1
                 )
             
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-            # More robust cleaning and parsing
-            response = response.split("**JSE FINANCIAL ANALYSIS (Complete the following two sections):**")[-1].strip()
-            response = re.sub(r'\s*(Human|User|Assistant):.*$', '', response, flags=re.DOTALL).strip()
+            response = full_response.split("**JSE Analyst's Report:**")[-1].strip()
+            response = re.sub(r'END OF RESPONSE', '', response, flags=re.IGNORECASE).strip()
+
+            # **FIX**: Add a final sanitization step to remove incomplete sentence fragments.
+            # This prevents context bleeding like "To compare the performance of SHP with MTN".
+            if not response.endswith(('.', '!', '?')):
+                last_period = response.rfind('.')
+                if last_period != -1:
+                    response = response[:last_period + 1]
 
             disclaimer = "\n\nDISCLAIMER: This is general information only and not personalized financial advice. Consult a qualified financial advisor."
             if "disclaimer" not in response.lower():
@@ -205,26 +208,27 @@ class AdvisorAgent:
         try:
             jse_note = ""
             if jse_context:
-                jse_note = "Provide examples relevant to the JSE and South African market context where applicable."
+                jse_note = "Provide examples relevant to the JSE (Johannesburg Stock Exchange) and the South African market."
             
-            prompt = f"""You are a financial education expert. Explain the following concept clearly for a {user_level}-level audience.
+            # **FIX**: A much more detailed and strict prompt to fix naming inconsistencies and repetition.
+            prompt = f"""You are a financial education expert. Your task is to explain a financial concept clearly, accurately, and completely for a {user_level}-level audience.
 
-GUIDELINES:
-- Use simple, clear language appropriate for {user_level} level
-- Provide practical examples and real-world applications
-- {jse_note}
-- Include any risks or important considerations
+**GUIDELINES (Follow Strictly):**
+1.  **Correct Terminology**: You **must** use the full name "Johannesburg Stock Exchange (JSE)" on the first mention. After that, you **must** use the acronym "JSE". Do not use any other variations or typos (e.g., "Johansburg", "JSA", "JSEA").
+2.  **Complete and Coherent Response**: Ensure your explanation is thorough, well-structured, and concludes naturally. Do not stop mid-sentence or repeat entire paragraphs.
+3.  **Clear Structure**: Structure your answer logically. Start with a simple definition, use an analogy, explain its function, and conclude with key takeaways.
+4.  **Contextualize**: {jse_note}
 
-CONCEPT TO EXPLAIN: {concept}
+**CONCEPT TO EXPLAIN:** {concept}
 
-EXPLANATION:"""
+**DETAILED AND ACCURATE EXPLANATION:**"""
             
             inputs = self._safe_tokenize(prompt, max_length=512)
             
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=400,
+                    max_new_tokens=500,
                     temperature=0.6,
                     do_sample=True,
                     pad_token_id=self.tokenizer.pad_token_id,
@@ -235,7 +239,7 @@ EXPLANATION:"""
                 )
             
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            response = response.split("EXPLANATION:")[-1].strip()
+            response = response.split("**DETAILED AND ACCURATE EXPLANATION:**")[-1].strip()
             
             return response if response else f"I apologize, but I encountered an error while explaining the concept '{concept}'. Please try again."
             
