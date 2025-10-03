@@ -1,4 +1,4 @@
-﻿# Model/advisor_model.py - FINAL FIXED VERSION
+﻿# Model/advisor_model.py - FINAL DEFINITIVE AND STABLE VERSION
 
 import os
 import warnings
@@ -36,7 +36,6 @@ class AdvisorAgent:
                 "1.  **Data Grounding**: Every analytical statement you make **must** be directly supported by the information in the 'CONTEXTUAL INFORMATION' section.\n"
                 "2.  **Acknowledge Gaps**: If the user's query requires information not present in the context (e.g., historical trends), you **must** state that the specific information is missing.\n"
                 "3.  **Synthesize, Don't Invent**: Your role is to synthesize the provided data, not to add external knowledge or make assumptions.\n"
-                # **FIX**: New rule to encourage interpretation over mere repetition.
                 "4.  **Interpret, Don't Just Repeat**: Explain what the provided metrics (e.g., closing price, day's range) indicate about the stock's recent activity, volatility, or stability. Provide a brief, grounded interpretation of the data."
             )
             return self
@@ -183,8 +182,6 @@ class AdvisorAgent:
             response = full_response.split("**JSE Analyst's Report:**")[-1].strip()
             response = re.sub(r'END OF RESPONSE', '', response, flags=re.IGNORECASE).strip()
 
-            # **FIX**: Add a final sanitization step to remove incomplete sentence fragments.
-            # This prevents context bleeding like "To compare the performance of SHP with MTN".
             if not response.endswith(('.', '!', '?')):
                 last_period = response.rfind('.')
                 if last_period != -1:
@@ -210,18 +207,18 @@ class AdvisorAgent:
             if jse_context:
                 jse_note = "Provide examples relevant to the JSE (Johannesburg Stock Exchange) and the South African market."
             
-            # **FIX**: A much more detailed and strict prompt to fix naming inconsistencies and repetition.
-            prompt = f"""You are a financial education expert. Your task is to explain a financial concept clearly, accurately, and completely for a {user_level}-level audience.
+            prompt = f"""You are a financial education expert. Your task is to explain a financial concept clearly and accurately.
 
-**GUIDELINES (Follow Strictly):**
-1.  **Correct Terminology**: You **must** use the full name "Johannesburg Stock Exchange (JSE)" on the first mention. After that, you **must** use the acronym "JSE". Do not use any other variations or typos (e.g., "Johansburg", "JSA", "JSEA").
-2.  **Complete and Coherent Response**: Ensure your explanation is thorough, well-structured, and concludes naturally. Do not stop mid-sentence or repeat entire paragraphs.
-3.  **Clear Structure**: Structure your answer logically. Start with a simple definition, use an analogy, explain its function, and conclude with key takeaways.
-4.  **Contextualize**: {jse_note}
+**AUDIENCE**: A novice investor who is intelligent but new to financial topics.
+**TONE**: Clear, professional, and educational. Use simple analogies where helpful.
+
+**GUIDELINES**:
+1.  Use the full name "Johannesburg Stock Exchange (JSE)" on the first mention, then the acronym "JSE".
+2.  Provide one single, complete, and coherent answer. Do not repeat yourself or add conversational filler.
 
 **CONCEPT TO EXPLAIN:** {concept}
 
-**DETAILED AND ACCURATE EXPLANATION:**"""
+**EXPLANATION:**"""
             
             inputs = self._safe_tokenize(prompt, max_length=512)
             
@@ -239,7 +236,9 @@ class AdvisorAgent:
                 )
             
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            response = response.split("**DETAILED AND ACCURATE EXPLANATION:**")[-1].strip()
+            response = response.split("**EXPLANATION:**")[-1].strip()
+            
+            response = self._sanitize_conceptual_explanation(response)
             
             return response if response else f"I apologize, but I encountered an error while explaining the concept '{concept}'. Please try again."
             
@@ -247,6 +246,35 @@ class AdvisorAgent:
             print(f"[AdvisorAgent] Error explaining concept: {e}")
             return f"I apologize, but I encountered an error while explaining the concept '{concept}'. Please try again."
     
+    def _sanitize_conceptual_explanation(self, text: str) -> str:
+        """
+        **NEW**: A definitive "Hard Stop" sanitizer. It finds the first sign of a major
+        structural error (like "**") and truncates the text, ensuring a single, clean answer.
+        """
+        if not text:
+            return ""
+
+        # 1. First, clean the text of any non-English (non-ASCII) characters.
+        text = re.sub(r'[^\x00-\x7F]+', '', text)
+
+        # 2. Find the position of the first double asterisk `**` after the initial part of the text.
+        # This is a very strong signal that the model is hallucinating a new section.
+        # We start searching after the first 100 characters to avoid a false positive at the beginning.
+        marker_pos = text.find('**', 100)
+
+        # 3. If the marker is found, truncate the text there.
+        if marker_pos != -1:
+            text = text[:marker_pos].strip()
+            print(f"[AdvisorAgent] Sanitizer: Truncated response at '**' marker.")
+
+        # 4. Final cleanup to ensure it ends on a complete sentence.
+        if not text.endswith(('.', '!', '?')):
+            last_period = text.rfind('.')
+            if last_period != -1:
+                text = text[:last_period + 1]
+
+        return text
+
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the loaded model"""
         try:
