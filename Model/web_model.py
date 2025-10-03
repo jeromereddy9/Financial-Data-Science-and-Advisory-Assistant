@@ -1,4 +1,4 @@
-# web_model/web_supplementation_agent.py
+﻿# web_model/web_supplementation_agent.py
 import requests
 from bs4 import BeautifulSoup
 import torch
@@ -6,6 +6,8 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import re
 from urllib.parse import urljoin, urlparse
 import time
+import yfinance as yf
+from typing import List, Dict, Any, Tuple
 
 class WebSupplementationAgent:
     def __init__(self, model_name="google/flan-t5-small"):
@@ -23,27 +25,111 @@ class WebSupplementationAgent:
             ).to(self.device)
         except Exception as e:
             print(f"[WebSupplementationAgent] Error loading model {model_name}: {e}")
-            # Fallback to a basic approach without ML summarization
             self.model = None
             self.tokenizer = None
 
-        # Default sources with better search URLs
         self.sources = {
             "fin24": "https://www.fin24.com/search?query={query}",
             "moneyweb": "https://www.moneyweb.co.za/search/{query}/"
         }
 
-        # Headers to avoid blocking
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
         }
 
+        self.jse_ticker_list = [
+            'AGL', 'AMS', 'ANG', 'APN', 'ARI', 'BHP', 'BID', 'BTI', 'BVT', 'CFR', 
+            'CLS', 'CPI', 'DSY', 'EXX', 'FSR', 'GFI', 'GLN', 'GRT', 'HAR', 'IMP', 
+            'INL', 'INP', 'MCG', 'MNP', 'MRP', 'MTN', 'NED', 'NPH', 'NPN', 'NRP', 
+            'OMU', 'OUT', 'PIK', 'PPH', 'PRX', 'REM', 'RLO', 'SBK', 'SHP', 'SLM', 
+            'SOL', 'SSW', 'TFG', 'TRU', 'VOD', 'WHL'
+        ]
+
+    def _extract_stock_symbols(self, text: str) -> Tuple[List[str], List[str]]:
+        """
+        **MODIFIED**: Extracts potential stock symbols and partitions them into valid JSE tickers and invalid/non-JSE tickers.
+        """
+        potential_tickers = set(re.findall(r'\b[A-Z]{3,5}\b', text.upper()))
+        
+        valid_jse_tickers = [ticker for ticker in potential_tickers if ticker in self.jse_ticker_list]
+        invalid_tickers = [ticker for ticker in potential_tickers if ticker not in self.jse_ticker_list]
+        
+        print(f"[WebSupplementationAgent] Found valid JSE tickers: {valid_jse_tickers}")
+        if invalid_tickers:
+            print(f"[WebSupplementationAgent] Found invalid/non-JSE tickers: {invalid_tickers}")
+            
+        return valid_jse_tickers, invalid_tickers
+
+    def get_structured_market_data(self, tickers: List[str], invalid_tickers: List[str] = None) -> str:
+        """
+        **MODIFIED**: Fetches data, adds a timestamp, and includes a warning for invalid tickers.
+        """
+        data_str = ""
+        
+        if tickers:
+            jse_tickers = [ticker.upper() + ".JO" for ticker in tickers]
+            data_str += "LATEST JSE MARKET DATA:\n"
+            try:
+                data = yf.download(jse_tickers, period="2d", progress=False, auto_adjust=True, group_by='ticker')
+                
+                if not data.empty:
+                    for ticker_jo in jse_tickers:
+                        stock_code = ticker_jo.replace(".JO", "")
+                        try:
+                            if ticker_jo in data.columns and not data[ticker_jo]['Close'].isnull().all():
+                                latest = data[ticker_jo].iloc[-1]
+                                # **NEW**: Extract the date from the DataFrame index.
+                                date_updated = latest.name.strftime('%Y-%m-%d')
+                                info = yf.Ticker(ticker_jo).info
+                                
+                                fifty_two_week_low = info.get('fiftyTwoWeekLow', 0)
+                                fifty_two_week_high = info.get('fiftyTwoWeekHigh', 0)
+                                
+                                # **MODIFIED**: Added the timestamp to the output string.
+                                data_str += (
+                                    f"- {stock_code}: Last Price: R{latest['Close']:.2f} (as of {date_updated}), "
+                                    f"Day's Range: R{latest['Low']:.2f} - R{latest['High']:.2f}, "
+                                    f"Volume: {latest['Volume']:,.0f}\n"
+                                )
+                            else:
+                                data_str += f"- {stock_code}: No recent data found. The ticker may be invalid or delisted.\n"
+                        except Exception:
+                            data_str += f"- {stock_code}: Could not process data for this ticker.\n"
+            except Exception as e:
+                print(f"[WebSupplementationAgent] yfinance download error: {e}")
+                data_str += "An error occurred while fetching JSE market data.\n"
+        
+        # **NEW**: Add the safety net warning if any invalid tickers were found.
+        if invalid_tickers:
+            data_str += f"\nNOTICE: The following tickers were ignored as they are not recognized as supported JSE stocks: {', '.join(invalid_tickers)}."
+        
+        if not data_str:
+            return "No market data could be retrieved for the query."
+
+        return data_str
+
+    def get_relevant_info(self, user_query: str, max_articles: int = 3) -> Dict[str, Any]:
+        """
+        **MODIFIED**: Main entry point now handles both valid and invalid tickers.
+        """
+        print(f"[WebSupplementationAgent] Fetching external context for query: '{user_query}'")
+        
+        articles = self.fetch_articles(user_query, max_articles)
+        summarized_articles = self.summarize_articles(articles)
+        
+        # **MODIFIED**: Capture both valid and invalid tickers.
+        valid_tickers, invalid_tickers = self._extract_stock_symbols(user_query)
+        
+        # **MODIFIED**: Pass both lists to the data fetching method.
+        market_data_str = self.get_structured_market_data(valid_tickers, invalid_tickers)
+        
+        return {
+            "articles": summarized_articles,
+            "market_data": market_data_str
+        }
+
+    # ... (The rest of the file remains unchanged)
     def _clean_url(self, url, base_url):
         """Clean and make URLs absolute"""
         if not url:
@@ -262,79 +348,3 @@ class WebSupplementationAgent:
         
         summary = '. '.join(summary_sentences)
         return summary[:500] + "..." if len(summary) > 500 else summary
-
-    # Quick patch for Web Agent to provide fallback data
-
-    def get_relevant_info(self, user_query, max_articles=5):
-        """
-        Fetch and summarize articles based on user query.
-        Returns a list of dicts with 'headline', 'url', 'source', 'summary', 'content'.
-        """
-        print(f"[WebSupplementationAgent] Fetching articles for query: '{user_query}'")
-    
-        articles = self.fetch_articles(user_query, max_articles)
-        if not articles:
-            print("[WebSupplementationAgent] No articles found, using fallback data.")
-        
-            # Provide contextual fallback based on query keywords
-            if "portfolio" in user_query.lower() and "diversif" in user_query.lower():
-                fallback_articles = [
-                    {
-                        "headline": "JSE Portfolio Diversification: Expert Tips for South African Investors",
-                        "url": "https://example.com/jse-diversification",
-                        "source": "fallback",
-                        "summary": "Financial experts recommend diversifying JSE portfolios across sectors including mining (AGL, BIL), banking (SBK, FSR), telecommunications (MTN, VOD), and retail (SHP, TRU) to reduce concentration risk and improve long-term returns.",
-                        "content": "Diversification across JSE sectors is crucial for South African investors to manage risk effectively in volatile markets."
-                    },
-                    {
-                        "headline": "Banking Sector Concentration Risk on JSE: What Investors Need to Know", 
-                        "url": "https://example.com/jse-banking-risk",
-                        "source": "fallback",
-                        "summary": "Holding only banking stocks (SBK, FSR, NED) exposes investors to sector-specific risks including interest rate changes, regulatory shifts, and economic downturns. Diversification into mining, retail, and technology sectors can help mitigate these risks.",
-                        "content": "JSE banking sector concentration carries significant risks that can be mitigated through proper diversification strategies."
-                    }
-                ]
-                return fallback_articles
-        
-            elif "bank" in user_query.lower() and "jse" in user_query.lower():
-                fallback_articles = [
-                    {
-                        "headline": "JSE Banking Stocks Analysis: SBK, FSR, NED Performance Review",
-                        "url": "https://example.com/jse-banking-analysis", 
-                        "source": "fallback",
-                        "summary": "Major JSE banking stocks include Standard Bank (SBK), FirstRand (FSR), Nedbank (NED), and Capitec (CPI). These stocks are sensitive to interest rate cycles, credit loss provisions, and South African economic conditions.",
-                        "content": "JSE banking sector represents a significant portion of the market but requires careful analysis of macroeconomic factors."
-                    }
-                ]
-                return fallback_articles
-        
-            else:
-                # Generic JSE fallback
-                fallback_articles = [
-                    {
-                        "headline": "JSE Market Update: Key Trends and Investment Opportunities",
-                        "url": "https://example.com/jse-market-update",
-                        "source": "fallback", 
-                        "summary": "The Johannesburg Stock Exchange continues to offer diverse investment opportunities across mining, banking, retail, and technology sectors. Investors should consider rand volatility, commodity prices, and local economic conditions when making investment decisions.",
-                        "content": "JSE market analysis considers multiple factors including commodity prices, rand strength, and local economic indicators."
-                    }
-                ]
-                return fallback_articles
-    
-        summarized_articles = self.summarize_articles(articles)
-    
-        # Ensure all items are properly formatted
-        cleaned_articles = []
-        for a in summarized_articles:
-            if isinstance(a, dict):
-                cleaned_article = {
-                    "headline": a.get("headline", "No headline"),
-                    "url": a.get("url", ""),
-                    "source": a.get("source", "unknown"),
-                    "summary": a.get("summary", "No summary available"),
-                    "content": a.get("content", "")
-                }
-                cleaned_articles.append(cleaned_article)
-    
-        print(f"[WebSupplementationAgent] Returning {len(cleaned_articles)} processed articles.")
-        return cleaned_articles
