@@ -1,4 +1,4 @@
-﻿# Model/advisor_model.py - FINAL DEFINITIVE AND STABLE VERSION
+﻿# Model/advisor_model.py - FINAL ROBUST AND VERIFIED VERSION
 
 import os
 import warnings
@@ -31,22 +31,26 @@ class AdvisorAgent:
 
         def add_grounding_rules(self) -> 'AdvisorAgent.PromptBuilder':
             """This is the 'advanced' part that builds on the base."""
+            # **FIX**: Re-engineered rules for a more integrated and advisory response.
             self.parts.append(
                 "**ANALYTICAL FRAMEWORK (Follow these rules strictly):**\n"
                 "1.  **Data Grounding**: Every analytical statement you make **must** be directly supported by the information in the 'CONTEXTUAL INFORMATION' section.\n"
-                "2.  **Acknowledge Gaps**: If the user's query requires information not present in the context (e.g., historical trends), you **must** state that the specific information is missing.\n"
-                "3.  **Synthesize, Don't Invent**: Your role is to synthesize the provided data, not to add external knowledge or make assumptions.\n"
-                "4.  **Interpret, Don't Just Repeat**: Explain what the provided metrics (e.g., closing price, day's range) indicate about the stock's recent activity, volatility, or stability. Provide a brief, grounded interpretation of the data."
+                "2.  **Acknowledge Gaps**: If historical data is missing, state it, but still provide an interpretation of the single-day data provided.\n"
+                "3.  **Synthesize, Don't Invent**: Your role is to synthesize the provided data, not to add external knowledge.\n"
+                "4.  **Cite the Source**: When referencing market data, you **must** mention the source provided in the context (e.g., 'According to Yahoo Finance...').\n"
+                "5.  **Quantitative Comparison**: When comparing stocks, first state the values for each stock, then explicitly declare which is higher or lower before drawing a conclusion.\n"
+                "6.  **Interpret and Conclude**: After presenting the data, explain what it indicates about recent performance and momentum. You **must** conclude your analysis with a single, concise advisory sentence based on this interpretation. For example: 'This stronger daily momentum for MTN may be of interest to short-term traders.'"
             )
             return self
 
         def add_strict_requirements(self) -> 'AdvisorAgent.PromptBuilder':
+            # **FIX**: Added a critical rule to enforce a single paragraph and forbid headers.
             self.parts.append(
                 "**STRICT REQUIREMENTS:**\n"
                 "-   Directly address the user's question below.\n"
                 "-   Maintain a professional, factual, and impartial tone.\n"
                 "-   Do not repeat any headers or instructions from this prompt in your response.\n"
-                "-   Ensure the response is a single, coherent paragraph and does not contain fragments of other potential queries."
+                "-   **CRITICAL**: The entire response must be a single, coherent paragraph. Do not use section headers like 'Summary' or 'Advisory Insight'."
             )
             return self
         
@@ -180,12 +184,9 @@ class AdvisorAgent:
             full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
             response = full_response.split("**JSE Analyst's Report:**")[-1].strip()
-            response = re.sub(r'END OF RESPONSE', '', response, flags=re.IGNORECASE).strip()
-
-            if not response.endswith(('.', '!', '?')):
-                last_period = response.rfind('.')
-                if last_period != -1:
-                    response = response[:last_period + 1]
+            
+            # **FIX**: Call the new, robust sanitizer for analytical responses.
+            response = self._sanitize_analytical_response(response)
 
             disclaimer = "\n\nDISCLAIMER: This is general information only and not personalized financial advice. Consult a qualified financial advisor."
             if "disclaimer" not in response.lower():
@@ -248,32 +249,69 @@ class AdvisorAgent:
     
     def _sanitize_conceptual_explanation(self, text: str) -> str:
         """
-        **NEW**: A definitive "Hard Stop" sanitizer. It finds the first sign of a major
-        structural error (like "**") and truncates the text, ensuring a single, clean answer.
+        A definitive "First Clean Answer" extractor for conceptual questions.
         """
         if not text:
             return ""
 
-        # 1. First, clean the text of any non-English (non-ASCII) characters.
         text = re.sub(r'[^\x00-\x7F]+', '', text)
 
-        # 2. Find the position of the first double asterisk `**` after the initial part of the text.
-        # This is a very strong signal that the model is hallucinating a new section.
-        # We start searching after the first 100 characters to avoid a false positive at the beginning.
-        marker_pos = text.find('**', 100)
+        paragraphs = text.split('\n\n')
+        
+        if not paragraphs:
+            return ""
+        first_para = paragraphs[0]
 
-        # 3. If the marker is found, truncate the text there.
-        if marker_pos != -1:
-            text = text[:marker_pos].strip()
-            print(f"[AdvisorAgent] Sanitizer: Truncated response at '**' marker.")
+        final_text = first_para
+        if len(paragraphs) > 1:
+            second_para_start = paragraphs[1].strip().lower()
+            continuation_markers = ["key takeaways:", "in summary:", "in conclusion:"]
+            if any(second_para_start.startswith(marker) for marker in continuation_markers):
+                final_text += "\n\n" + paragraphs[1]
 
-        # 4. Final cleanup to ensure it ends on a complete sentence.
-        if not text.endswith(('.', '!', '?')):
-            last_period = text.rfind('.')
+        if not final_text.endswith(('.', '!', '?')):
+            last_period = final_text.rfind('.')
             if last_period != -1:
-                text = text[:last_period + 1]
+                final_text = final_text[:last_period + 1]
 
-        return text
+        return final_text
+
+    def _sanitize_analytical_response(self, text: str) -> str:
+        """
+        **REVISED**: A more aggressive sanitizer to enforce a single paragraph by
+        removing common section headers and other noise.
+        """
+        if not text:
+            return ""
+
+        # **FIX**: Added more stop phrases to catch model violations of the single-paragraph rule.
+        stop_phrases = [
+            "\n\nbased on the provided data", 
+            "end of analysis",
+            "disclaimer:",
+            "in summary,",
+            "advisory insight:",
+            "human:",
+            "assistant:"
+        ]
+
+        # Find the earliest occurrence of any stop phrase.
+        stop_index = len(text)
+        for phrase in stop_phrases:
+            found_index = text.lower().find(phrase.lower())
+            if found_index != -1:
+                stop_index = min(stop_index, found_index)
+
+        # Take only the content before the first stop phrase.
+        clean_text = text[:stop_index].strip()
+
+        # Now, ensure the result ends with a complete sentence to avoid abrupt cutoffs.
+        if clean_text and not clean_text.endswith(('.', '!', '?')):
+            last_sentence_end = max(clean_text.rfind('.'), clean_text.rfind('!'), clean_text.rfind('?'))
+            if last_sentence_end != -1:
+                clean_text = clean_text[:last_sentence_end + 1]
+        
+        return clean_text
 
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the loaded model"""
