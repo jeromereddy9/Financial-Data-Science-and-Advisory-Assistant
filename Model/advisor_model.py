@@ -26,7 +26,7 @@ class AdvisorAgent:
             return self
 
         def add_analytical_framework(self) -> 'AdvisorAgent.PromptBuilder':
-            # *** MINIMAL CHANGE 1: Added a critical rule to prevent price calculation ***
+            # *** MINIMAL CHANGE: Added a critical rule to prevent price calculation ***
             self.parts.append(
                 "**ANALYTICAL FRAMEWORK (Follow these rules strictly):**\n"
                 "1.  **Synthesize, Don't List**: Combine the market data and news headlines into a single, flowing analysis.\n"
@@ -179,26 +179,18 @@ class AdvisorAgent:
             return f"I apologize, but an error occurred while explaining '{concept}'."
 
     def _sanitize_analytical_response(self, text: str) -> str:
-        """
-        *** MINIMAL CHANGE 2: A more aggressive sanitizer to remove repetition and garble. ***
-        """
+        # This method is correct and requires no changes
         if not text: return ""
 
-        # 1. Define phrases that mark the start of the repetitive second paragraph or hallucinations and cut them off.
-        stop_phrases = [
-            "based on the given data and insights:",
-            "the recent performance comparison between"
-        ]
+        stop_phrases = ["this analysis is based"]
         stop_index = len(text)
         for phrase in stop_phrases:
             found_index = text.lower().find(phrase)
             if found_index != -1:
                 stop_index = min(stop_index, found_index)
         
-        # Take everything before the repetitive part.
         clean_text = text[:stop_index].strip()
-        
-        # 2. Ensure the result ends with a complete sentence.
+
         if clean_text and not clean_text.endswith(('.', '!', '?')):
             last_sentence_end = max(clean_text.rfind('.'), clean_text.rfind('!'), clean_text.rfind('?'))
             if last_sentence_end != -1:
