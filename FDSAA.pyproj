@@ -35,6 +35,9 @@
     </Compile>
     <Compile Include="Model\__init__.py" />
     <Compile Include="Tests\Debug_pipeline.py" />
+    <Compile Include="Tests\test_Advisor.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="Tests\test_pipeline.py" />
     <Compile Include="View\Components\charts.py" />
     <Compile Include="View\dashboard.py" />

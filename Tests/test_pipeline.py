@@ -1,257 +1,341 @@
-# test_pipeline.py
+# test_pipeline.py - Comprehensive JSE Advisory System Testing
 import sys
 import os
-import json
+import time
 from datetime import datetime
+import json
 
-# Add parent directory to path for imports
+# Add the project root to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-try:
-    from Controller.autogen_controller import FinancialAdvisoryController
-except ImportError as e:
-    print(f"Import Error: {e}")
-    print("Please ensure the Controller module is in the correct path")
-    sys.exit(1)
+from Controller.autogen_controller import FinancialAdvisoryController
 
-def print_separator(title, char="=", length=60):
-    """Print a formatted separator with title"""
-    print(f"\n{char * length}")
-    print(f" {title.center(length - 2)} ")
-    print(f"{char * length}")
-
-def print_dict_formatted(data, title="", indent=0):
-    """Print dictionary in a formatted way"""
-    if title:
-        print(" " * indent + f"{title}:")
+class PipelineTester:
+    def __init__(self):
+        self.controller = None
+        self.test_results = []
+        self.initialize_system()
     
-    for key, value in data.items():
-        if isinstance(value, dict):
-            print(" " * indent + f"{key}:")
-            print_dict_formatted(value, indent=indent + 2)
-        elif isinstance(value, list):
-            print(" " * indent + f"{key}: [{len(value)} items]")
-            for i, item in enumerate(value[:3]):  # Show first 3 items
-                if isinstance(item, dict):
-                    print(" " * (indent + 2) + f"{i+1}. {item.get('headline', item.get('summary', str(item)[:50]))}")
-                else:
-                    print(" " * (indent + 2) + f"{i+1}. {str(item)[:50]}")
-            if len(value) > 3:
-                print(" " * (indent + 2) + f"... and {len(value) - 3} more")
-        else:
-            value_str = str(value)[:100] + "..." if len(str(value)) > 100 else str(value)
-            print(" " * indent + f"{key}: {value_str}")
-
-def test_single_query(controller, query, description=""):
-    """Test a single query and display results"""
-    print_separator(f"Testing Query: {description}" if description else "Testing Query")
-    print(f"Query: {query}")
-    
-    try:
-        # Process the query
-        print("\n[Processing...] This may take a moment while agents load and process...")
-        results = controller.process_user_query(query)
+    def initialize_system(self):
+        """Initialize the financial advisory system"""
+        print("🚀 INITIALIZING JSE FINANCIAL ADVISORY SYSTEM...")
+        print("=" * 60)
         
-        # Display results
-        if results.get("error"):
-            print_separator("ERROR OCCURRED", "!")
-            print(f"Error: {results.get('executive_summary', {}).get('error', 'Unknown error')}")
-            print(f"System Status: {results.get('system_status', {})}")
-            return False
-        
-        # System Information
-        print_separator("SYSTEM STATUS")
-        system_status = results.get("system_status", {})
-        print(f"Request Type: {results.get('request_type', 'unknown')}")
-        print(f"Session ID: {results.get('session_id', 'unknown')}")
-        print(f"Memory Used: {'Yes' if results.get('memory_used') else 'No'}")
-        
-        active_agents = [agent for agent, status in system_status.items() if status]
-        inactive_agents = [agent for agent, status in system_status.items() if not status]
-        
-        print(f"Active Agents: {', '.join(active_agents)}")
-        if inactive_agents:
-            print(f"Inactive Agents: {', '.join(inactive_agents)}")
-        
-        # Main Advisor Response
-        print_separator("FINANCIAL ADVISOR RESPONSE")
-        advisor_response = results.get("advisor_full_response", "No response available")
-        print(advisor_response)
-        
-        # Summary Information
-        print_separator("SUMMARY & INSIGHTS")
-        
-        summary = results.get("summary", "")
-        if summary:
-            print("Quick Summary:")
-            print(summary)
-        
-        detailed_insights = results.get("detailed_insights", "")
-        if detailed_insights:
-            print("\nDetailed Insights:")
-            print(detailed_insights)
-        
-        # Executive Summary
-        executive_summary = results.get("executive_summary", {})
-        if executive_summary and not executive_summary.get("error"):
-            print_separator("EXECUTIVE SUMMARY")
-            print_dict_formatted(executive_summary)
-        
-        # Data Analysis Results
-        analysis_results = results.get("analysis_results")
-        if analysis_results:
-            print_separator("DATA ANALYSIS & VISUALIZATION")
+        try:
+            start_time = time.time()
+            self.controller = FinancialAdvisoryController()
+            init_time = time.time() - start_time
             
-            if analysis_results.get("error"):
-                print(f"Analysis Error: {analysis_results['error']}")
-                print(f"Fallback: {analysis_results.get('fallback_message', '')}")
-            else:
-                print(f"Chart Type: {analysis_results.get('chart_type', 'unknown')}")
-                print(f"Analysis Request: {analysis_results.get('analysis_request', {})}")
-                
-                data_insights = analysis_results.get("data_insights", "")
-                if data_insights:
-                    print(f"\nData Insights: {data_insights}")
-                
-                analysis_code = analysis_results.get("analysis_code", "")
-                if analysis_code:
-                    print("\nGenerated Analysis Code:")
-                    print("-" * 40)
-                    print(analysis_code[:500] + "..." if len(analysis_code) > 500 else analysis_code)
-                    print("-" * 40)
-        
-        # Web Context Information
-        web_context = results.get("web_context", [])
-        if web_context:
-            print_separator("WEB CONTEXT (Recent News)")
-            for i, article in enumerate(web_context, 1):
-                print(f"{i}. {article.get('headline', 'No headline')}")
-                print(f"   Source: {article.get('source', 'Unknown')}")
-                print(f"   Summary: {article.get('summary', 'No summary')[:100]}...")
-                print()
-        
-        print_separator("QUERY COMPLETED SUCCESSFULLY", "?")
-        return True
-        
-    except Exception as e:
-        print_separator("CRITICAL ERROR", "!")
-        print(f"Error processing query: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def run_comprehensive_test(controller):
-    """Run multiple test queries to verify system functionality"""
+            # Health check
+            health = self.controller.health_check()
+            
+            print(f"✅ System initialized in {init_time:.2f} seconds")
+            print(f"📊 Overall Status: {health['overall_status'].upper()}")
+            
+            # Display agent status
+            print("\n🔧 AGENT STATUS:")
+            for agent, status in health['agent_statuses'].items():
+                status_icon = "✅" if "Active" in status or "Template" in status else "⚠️"
+                print(f"   {status_icon} {agent}: {status}")
+            
+            # Memory stats
+            if self.controller.agents.get('memory'):
+                memory_stats = self.controller.agents['memory'].get_memory_stats()
+                print(f"💾 Memory Sessions: {memory_stats.get('total_sessions', 0)}")
+            
+            print("=" * 60)
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed to initialize system: {e}")
+            return False
     
-    test_queries = [
-        {
-            "query": "Should I diversify my portfolio if I only hold shares in banks on the JSE?",
-            "description": "Portfolio Diversification Query"
-        },
-        {
-            "query": "What are the trends for AGL and SBK stocks? Show me a chart comparing their performance.",
-            "description": "Stock Analysis with Visualization"
-        },
-        {
-            "query": "How is the JSE mining sector performing compared to banking? I want to see the data.",
-            "description": "Sector Comparison Query"
-        },
-        {
-            "query": "What should I consider when investing in MTN shares?",
-            "description": "Individual Stock Analysis"
+    def run_test_query(self, query, category, expected_tickers=None):
+        """Run a single test query and record results"""
+        print(f"\n🎯 TESTING: {category}")
+        print(f"📝 Query: '{query}'")
+        
+        start_time = time.time()
+        
+        try:
+            # Process the query
+            response = self.controller.process_user_query(query)
+            processing_time = time.time() - start_time
+            
+            # Extract results
+            result = {
+                'category': category,
+                'query': query,
+                'processing_time': processing_time,
+                'success': True,
+                'response_length': len(response.get('advisor_full_response', '')),
+                'tickers_analyzed': response.get('tickers_analyzed', []),
+                'request_type': response.get('request_type'),
+                'articles_found': len(response.get('web_context', [])),
+                'has_market_data': bool(response.get('market_data_context')),
+                'has_analysis': bool(response.get('analysis_results')),
+                'session_id': response.get('session_id'),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Display results
+            print(f"✅ Success: Processed in {processing_time:.2f}s")
+            print(f"📊 Response: {result['response_length']} characters")
+            print(f"📈 Tickers: {result['tickers_analyzed']}")
+            print(f"📰 Articles: {result['articles_found']}")
+            print(f"🔬 Analysis: {'Yes' if result['has_analysis'] else 'No'}")
+            print(f"💾 Session: {result['session_id']}")
+            
+            # Show snippet of response
+            advisor_response = response.get('advisor_full_response', '')[:200] + "..." if len(response.get('advisor_full_response', '')) > 200 else response.get('advisor_full_response', '')
+            print(f"💡 Response snippet: {advisor_response}")
+            
+            self.test_results.append(result)
+            return result
+            
+        except Exception as e:
+            error_result = {
+                'category': category,
+                'query': query,
+                'processing_time': time.time() - start_time,
+                'success': False,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            print(f"❌ Error: {e}")
+            self.test_results.append(error_result)
+            return error_result
+    
+    def run_comprehensive_tests(self):
+        """Run a comprehensive suite of test queries"""
+        if not self.controller:
+            print("❌ System not initialized. Cannot run tests.")
+            return
+        
+        print("\n" + "=" * 60)
+        print("🧪 COMPREHENSIVE PIPELINE TESTING")
+        print("=" * 60)
+        
+        test_queries = [
+            # Basic Stock Queries
+            ("What is the current price of MTN?", "Basic Stock Price"),
+            ("Show me MTN and Vodacom prices", "Multiple Stock Prices"),
+            ("MTN share price today", "Stock Price Short"),
+            
+            # Comparative Analysis
+            ("Compare MTN and Vodacom stock performance", "Stock Comparison"),
+            ("Compare Standard Bank and FirstRand", "Banking Sector Comparison"),
+            ("Show me mining stocks: Anglo American vs Sasol", "Mining Sector Comparison"),
+            
+            # Sector Analysis
+            ("How is the banking sector performing?", "Sector Analysis"),
+            ("What's happening with JSE telecom stocks?", "Telecom Sector"),
+            ("Analyze the mining sector on JSE", "Mining Sector"),
+            
+            # News & Market Context
+            ("Show me recent news about Naspers", "Stock News"),
+            ("What's the latest news affecting JSE stocks?", "Market News"),
+            ("News about Standard Bank shares", "Specific Stock News"),
+            
+            # Technical Analysis Requests
+            ("Show me candlestick chart for MTN", "Candlestick Chart"),
+            ("Plot moving averages for Anglo American", "Moving Averages"),
+            ("Analyze trading volume for Vodacom", "Volume Analysis"),
+            ("Create correlation matrix for mining stocks", "Correlation Analysis"),
+            
+            # Portfolio & Allocation
+            ("Show portfolio allocation for MTN 40%, NPN 30%, SBK 30%", "Portfolio Allocation"),
+            ("Analyze my holdings: MTN, Naspers, Standard Bank", "Portfolio Analysis"),
+            
+            # Conceptual Explanations
+            ("Explain what P/E ratio means", "Financial Concept"),
+            ("What is dividend yield?", "Dividend Concept"),
+            ("Explain market capitalization", "Market Cap Concept"),
+            
+            # Complex Multi-part Queries
+            ("Compare MTN and Vodacom performance with recent news and show me charts", "Complex Analysis"),
+            ("Analyze Standard Bank stock with technical indicators and market context", "Technical + Fundamental"),
+            
+            # Edge Cases
+            ("What's the weather today?", "Irrelevant Query"),
+            ("", "Empty Query"),
+            ("Show me stock for unknown company XYZ", "Unknown Company"),
+        ]
+        
+        total_tests = len(test_queries)
+        successful_tests = 0
+        total_processing_time = 0
+        
+        for i, (query, category) in enumerate(test_queries, 1):
+            print(f"\n📋 Test {i}/{total_tests}")
+            result = self.run_test_query(query, category)
+            
+            if result['success']:
+                successful_tests += 1
+                total_processing_time += result['processing_time']
+            
+            # Small delay between tests to avoid rate limiting
+            if i < len(test_queries):
+                time.sleep(2)
+        
+        # Generate test summary
+        self.generate_test_summary(total_tests, successful_tests, total_processing_time)
+    
+    def generate_test_summary(self, total_tests, successful_tests, total_processing_time):
+        """Generate a comprehensive test summary"""
+        print("\n" + "=" * 60)
+        print("📊 TEST SUMMARY REPORT")
+        print("=" * 60)
+        
+        success_rate = (successful_tests / total_tests) * 100
+        avg_processing_time = total_processing_time / successful_tests if successful_tests > 0 else 0
+        
+        print(f"✅ Successful Tests: {successful_tests}/{total_tests} ({success_rate:.1f}%)")
+        print(f"⏱️  Average Processing Time: {avg_processing_time:.2f}s")
+        print(f"🕒 Total Testing Time: {total_processing_time:.2f}s")
+        
+        # Categorize results
+        categories = {}
+        for result in self.test_results:
+            if result['success']:
+                category = result['category']
+                if category not in categories:
+                    categories[category] = []
+                categories[category].append(result)
+        
+        print(f"\n📈 RESULTS BY CATEGORY:")
+        for category, results in categories.items():
+            avg_time = sum(r['processing_time'] for r in results) / len(results)
+            print(f"   {category}: {len(results)} tests, avg {avg_time:.2f}s")
+        
+        # Identify fastest and slowest tests
+        if self.test_results:
+            successful_results = [r for r in self.test_results if r['success']]
+            if successful_results:
+                fastest = min(successful_results, key=lambda x: x['processing_time'])
+                slowest = max(successful_results, key=lambda x: x['processing_time'])
+                
+                print(f"\n⚡ Fastest Test: '{fastest['query']}' - {fastest['processing_time']:.2f}s")
+                print(f"🐌 Slowest Test: '{slowest['query']}' - {slowest['processing_time']:.2f}s")
+        
+        # Show failed tests
+        failed_tests = [r for r in self.test_results if not r['success']]
+        if failed_tests:
+            print(f"\n❌ FAILED TESTS ({len(failed_tests)}):")
+            for failed in failed_tests:
+                print(f"   - {failed['category']}: '{failed['query']}'")
+                print(f"     Error: {failed['error']}")
+        
+        # Save detailed results to file
+        self.save_test_results()
+    
+    def save_test_results(self):
+        """Save test results to a JSON file"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"pipeline_test_results_{timestamp}.json"
+        
+        results_data = {
+            'test_timestamp': datetime.now().isoformat(),
+            'system_health': self.controller.health_check() if self.controller else {},
+            'test_results': self.test_results,
+            'summary': {
+                'total_tests': len(self.test_results),
+                'successful_tests': len([r for r in self.test_results if r['success']]),
+                'failed_tests': len([r for r in self.test_results if not r['success']])
+            }
         }
-    ]
-    
-    print_separator("COMPREHENSIVE SYSTEM TEST", "=", 80)
-    print(f"Running {len(test_queries)} test queries...")
-    
-    successful_tests = 0
-    
-    for i, test in enumerate(test_queries, 1):
-        print(f"\n[TEST {i}/{len(test_queries)}]")
         
-        success = test_single_query(
-            controller, 
-            test["query"], 
-            test["description"]
-        )
+        with open(filename, 'w') as f:
+            json.dump(results_data, f, indent=2)
         
-        if success:
-            successful_tests += 1
+        print(f"\n💾 Detailed results saved to: {filename}")
+    
+    def test_specific_scenarios(self):
+        """Test specific scenarios of interest"""
+        print("\n" + "=" * 60)
+        print("🎯 SPECIFIC SCENARIO TESTING")
+        print("=" * 60)
         
-        # Small delay between tests
-        import time
-        time.sleep(2)
+        scenarios = [
+            # Data Agent Visualization Tests
+            ("Generate code for MTN candlestick chart", "Candlestick Code Generation"),
+            ("Create moving averages code for multiple stocks", "Technical Analysis Code"),
+            ("Show me portfolio allocation visualization code", "Portfolio Visualization Code"),
+            
+            # Memory Functionality Tests
+            ("What did we discuss about MTN?", "Memory Recall - First Query"),
+            ("Tell me more about banking stocks we talked about", "Memory Recall - Context"),
+            
+            # Web Agent Comprehensive Tests
+            ("Get comprehensive data for top 5 JSE stocks", "Multi-Stock Data Fetch"),
+            ("Fetch latest news for financial sector", "Sector News Fetch"),
+            
+            # Advisor Agent Complex Reasoning
+            ("Based on current market data, what's your outlook for telecom stocks?", "Market Outlook"),
+            ("Considering recent news, should I invest in mining stocks?", "Investment Advice"),
+        ]
+        
+        for query, scenario in scenarios:
+            self.run_test_query(query, scenario)
     
-    # Final Results
-    print_separator("TEST RESULTS SUMMARY", "=", 80)
-    print(f"Successful Tests: {successful_tests}/{len(test_queries)}")
-    print(f"Success Rate: {(successful_tests/len(test_queries)*100):.1f}%")
-    
-    if successful_tests == len(test_queries):
-        print("?? All tests passed! System is functioning correctly.")
-    elif successful_tests > 0:
-        print("??  Some tests passed. System has partial functionality.")
-    else:
-        print("? All tests failed. System requires attention.")
+    def stress_test(self, num_queries=10):
+        """Run multiple similar queries to test performance"""
+        print(f"\n⚡ STRESS TEST: {num_queries} consecutive queries")
+        
+        base_query = "Show me MTN stock price"
+        start_time = time.time()
+        
+        for i in range(num_queries):
+            query = f"{base_query} - test {i+1}"
+            self.run_test_query(query, f"Stress Test {i+1}")
+        
+        total_time = time.time() - start_time
+        print(f"\n📊 Stress Test Complete: {num_queries} queries in {total_time:.2f}s")
+        print(f"📈 Average: {total_time/num_queries:.2f}s per query")
 
 def main():
-    """Main test function"""
-    print_separator("FINANCIAL ADVISORY SYSTEM - TEST PIPELINE", "=", 80)
-    print(f"Test started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    """Main testing function"""
+    print("JSE ADVISORY SYSTEM - PIPELINE TESTER")
+    print("This will test the entire system with various query types.")
+    print("It may take several minutes to complete.\n")
+    
+    tester = PipelineTester()
+    
+    if not tester.controller:
+        print("❌ Cannot proceed with testing - system initialization failed.")
+        return
+    
+    # Ask user what type of testing to perform
+    print("\nSelect test type:")
+    print("1. Comprehensive Test Suite (Recommended)")
+    print("2. Specific Scenario Testing")
+    print("3. Stress Test")
+    print("4. All Tests")
     
     try:
-        # Initialize the controller
-        print("\n[INITIALIZATION] Loading Financial Advisory System...")
-        controller = FinancialAdvisoryController()
+        choice = input("\nEnter choice (1-4): ").strip()
         
-        # Display system information
-        print_separator("SYSTEM INFORMATION")
-        system_info = controller.get_system_info()
-        
-        print(f"System: {system_info['system_name']}")
-        print(f"Version: {system_info['version']}")
-        print(f"Target Market: {system_info['target_market']}")
-        
-        # Display agent status
-        print("\nAgent Status:")
-        for agent_name, status in system_info['system_status'].items():
-            status_icon = "?" if status else "?"
-            print(f"  {status_icon} {agent_name}: {'Active' if status else 'Inactive'}")
-        
-        # Health check
-        health = controller.health_check()
-        print(f"\nOverall System Health: {health['overall_status'].upper()}")
-        
-        if health['critical_issues']:
-            print("Critical Issues:")
-            for issue in health['critical_issues']:
-                print(f"  - {issue}")
-        
-        if health['warnings']:
-            print("Warnings:")
-            for warning in health['warnings']:
-                print(f"  - {warning}")
-        
-        # Run tests based on system health
-        if health['overall_status'] in ['healthy', 'degraded']:
-            print("\n[STARTING TESTS] System ready for testing...")
-            run_comprehensive_test(controller)
+        if choice == "1":
+            tester.run_comprehensive_tests()
+        elif choice == "2":
+            tester.test_specific_scenarios()
+        elif choice == "3":
+            num_queries = input("Number of queries for stress test (default 10): ").strip()
+            num_queries = int(num_queries) if num_queries.isdigit() else 10
+            tester.stress_test(num_queries)
+        elif choice == "4":
+            tester.run_comprehensive_tests()
+            tester.test_specific_scenarios()
+            tester.stress_test()
         else:
-            print("\n[SYSTEM CRITICAL] Cannot run tests due to critical system issues.")
-            print("Please check agent initialization and resolve issues before testing.")
+            print("Invalid choice. Running comprehensive tests...")
+            tester.run_comprehensive_tests()
     
+    except KeyboardInterrupt:
+        print("\n\n⏹️ Testing interrupted by user.")
     except Exception as e:
-        print_separator("INITIALIZATION ERROR", "!")
-        print(f"Failed to initialize system: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        print("\nTroubleshooting Tips:")
-        print("1. Check that all model files are accessible")
-        print("2. Verify internet connection for downloading models")
-        print("3. Ensure sufficient disk space and memory")
-        print("4. Check file permissions in the project directory")
+        print(f"\n❌ Testing error: {e}")
 
 if __name__ == "__main__":
     main()

@@ -240,7 +240,7 @@ import numpy as np
 def create_portfolio_allocation_chart(holdings=None):
     """Create portfolio allocation pie chart"""
     if holdings is None:
-        holdings = {holdings_data}  # Will be replaced with actual data
+        holdings = {holdings_data} 
     
     # Extract labels and sizes
     labels = list(holdings.keys())

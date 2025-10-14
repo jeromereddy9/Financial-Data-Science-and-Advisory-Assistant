@@ -1,725 +1,652 @@
-﻿import streamlit as st
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import plotly.graph_objects as go
-import plotly.express as px
+# app.py - FIXED VERSION with independent tab refresh
+import streamlit as st
 import sys
 import os
-import json
+import asyncio
 import time
-import traceback
+from datetime import datetime, timedelta
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from typing import Dict, List, Any
+import json
 
-# Add the controller path
+# Add the project root to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import the Financial Advisory System
-try:
-    from Controller.autogen_controller import FinancialAdvisoryController
-    CONTROLLER_AVAILABLE = True
-except ImportError as e:
-    st.error(f"Failed to import Financial Advisory Controller: {e}")
-    CONTROLLER_AVAILABLE = False
+# Initialize all session state variables at the top
+if 'initialized' not in st.session_state:
+    st.session_state.initialized = False
+if 'controller' not in st.session_state:
+    st.session_state.controller = None
+if 'conversation_history' not in st.session_state:
+    st.session_state.conversation_history = []
+if 'last_market_refresh' not in st.session_state:
+    st.session_state.last_market_refresh = None
+if 'last_news_refresh' not in st.session_state:
+    st.session_state.last_news_refresh = None
+if 'stock_data' not in st.session_state:
+    st.session_state.stock_data = pd.DataFrame()
+if 'news_data' not in st.session_state:
+    st.session_state.news_data = []
+if 'user_query' not in st.session_state:
+    st.session_state.user_query = ""
+if 'current_tab' not in st.session_state:
+    st.session_state.current_tab = "🎯 Advisor Chat"
 
-# Page config - MUST be first Streamlit command
+# Set page config FIRST - must be the first Streamlit command
 st.set_page_config(
-    page_title="JSE Financial Advisory System",
+    page_title="JSE Financial Advisor",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-def initialize_session_state():
-    """Initialize all session state variables"""
-    if "theme" not in st.session_state:
-        st.session_state["theme"] = "dark"
-    if "section" not in st.session_state:
-        st.session_state["section"] = "dashboard"
-    if "controller" not in st.session_state:
-        st.session_state["controller"] = None
-    if "controller_status" not in st.session_state:
-        st.session_state["controller_status"] = "not_initialized"
-    if "query_history" not in st.session_state:
-        st.session_state["query_history"] = []
-    if "current_analysis" not in st.session_state:
-        st.session_state["current_analysis"] = None
-    if "example_query" not in st.session_state:
-        st.session_state["example_query"] = None
-
-@st.cache_resource
-def initialize_controller():
-    """Initialize the Financial Advisory Controller (cached)"""
-    if not CONTROLLER_AVAILABLE:
-        return None, "import_error"
-    
-    try:
-        with st.spinner("🚀 Initializing AI Financial Advisory System..."):
-            controller = FinancialAdvisoryController()
-            health = controller.health_check()
-            return controller, health['overall_status']
-    except Exception as e:
-        st.error(f"Failed to initialize controller: {e}")
-        return None, "initialization_error"
-
-def apply_theme_styles():
-    """Apply theme-specific styles"""
-    # Safety check - ensure theme is initialized
-    if "theme" not in st.session_state:
-        st.session_state["theme"] = "dark"
+class JSEAdvisoryApp:
+    def __init__(self):
+        self.controller = None
+        self.initialize_system()
         
-    if st.session_state["theme"] == "dark":
-        colors = {
-            'bg': '#0b0d12',
-            'sidebar_bg': '#1a1f2b',
-            'panel': '#1e2530',
-            'panel_light': '#252c3a',
-            'muted': '#2a3441',
-            'text': '#e8ebf1',
-            'subtext': '#a7b0c0',
-            'primary': '#4f8cff',
-            'success': '#2ec27e',
-            'warning': '#f0b429',
-            'danger': '#ef476f',
-            'border': '#2a3441'
+    def initialize_system(self):
+        """Initialize the financial advisory system"""
+        if st.session_state.initialized and st.session_state.controller is not None:
+            self.controller = st.session_state.controller
+            return True
+            
+        try:
+            with st.spinner("🚀 Initializing JSE Financial Advisory System..."):
+                from Controller.autogen_controller import FinancialAdvisoryController
+                self.controller = FinancialAdvisoryController()
+                st.session_state.controller = self.controller
+                st.session_state.initialized = True
+                
+                # Initialize conversation history from controller
+                if hasattr(self.controller, 'conversation_history'):
+                    st.session_state.conversation_history = self.controller.conversation_history
+                
+                return True
+                
+        except Exception as e:
+            st.error(f"❌ Failed to initialize system: {e}")
+            return False
+
+    @st.cache_data(ttl=30)  # Cache for 30 seconds
+    def get_live_stock_data_cached(_self, tickers: List[str]) -> pd.DataFrame:
+        """Cached version of stock data fetching"""
+        return _self.get_live_stock_data_sync(tickers)
+
+    def get_live_stock_data_sync(self, tickers: List[str]) -> pd.DataFrame:
+        """Synchronous stock data fetching"""
+        try:
+            import yfinance as yf
+            stock_data = []
+            
+            for ticker in tickers:
+                try:
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                    hist = stock.history(period='1d', interval='1m')
+                    
+                    if not hist.empty:
+                        current_price = hist['Close'].iloc[-1]
+                        previous_close = info.get('previousClose', current_price)
+                        change = current_price - previous_close
+                        change_percent = (change / previous_close) * 100
+                        
+                        # Convert to Rands if needed
+                        if current_price > 1000:
+                            current_price = current_price / 100
+                            previous_close = previous_close / 100
+                            change = change / 100
+                        
+                        stock_data.append({
+                            'Ticker': ticker.replace('.JO', ''),
+                            'Price (R)': f"{current_price:.2f}",
+                            'Change (R)': f"{change:+.2f}",
+                            'Change (%)': f"{change_percent:+.2f}%",
+                            'Volume': f"{info.get('volume', 0):,}",
+                            'Status': '🟢 Up' if change > 0 else '🔴 Down' if change < 0 else '⚪ Flat'
+                        })
+                except Exception:
+                    continue
+                    
+            return pd.DataFrame(stock_data)
+        except Exception as e:
+            st.error(f"Error fetching live data: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=60)  # Cache for 60 seconds
+    def get_live_news_cached(_self, limit: int = 15) -> List[Dict[str, Any]]:
+        """Cached version of news fetching"""
+        return _self.get_live_news_sync(limit)
+
+    def get_live_news_sync(self, limit: int = 15) -> List[Dict[str, Any]]:
+        """Synchronous news fetching"""
+        try:
+            from Model.web_model import WebSupplementationAgent
+            web_agent = WebSupplementationAgent()
+            
+            # Get news for major JSE stocks
+            major_stocks = ['MTN.JO', 'NPN.JO', 'SBK.JO', 'AGL.JO', 'VOD.JO']
+            all_articles = []
+            
+            for ticker in major_stocks:
+                try:
+                    articles = web_agent.fetch_articles_from_google_rss([(ticker, ticker.replace('.JO', ''))], max_per=2)
+                    all_articles.extend(articles)
+                except:
+                    continue
+                
+            # Remove duplicates and sort by relevance
+            unique_articles = []
+            seen_headlines = set()
+            
+            for article in all_articles:
+                if article['headline'] not in seen_headlines:
+                    seen_headlines.add(article['headline'])
+                    unique_articles.append(article)
+            
+            return unique_articles[:limit]
+        except Exception as e:
+            st.error(f"Error fetching news: {e}")
+            return []
+
+    def create_stock_price_chart(self, ticker: str, period: str = '1mo') -> go.Figure:
+        """Create interactive stock price chart"""
+        try:
+            import yfinance as yf
+            
+            stock = yf.Ticker(ticker)
+            hist = stock.history(period=period)
+            
+            if hist.empty:
+                return None
+                
+            fig = go.Figure()
+            
+            # Add candlestick trace
+            fig.add_trace(go.Candlestick(
+                x=hist.index,
+                open=hist['Open'],
+                high=hist['High'],
+                low=hist['Low'],
+                close=hist['Close'],
+                name='Price'
+            ))
+            
+            # Customize layout
+            fig.update_layout(
+                title=f"{ticker.replace('.JO', '')} Stock Price - {period.upper()}",
+                xaxis_title="Date",
+                yaxis_title="Price (ZAR)",
+                template="plotly_white",
+                height=400
+            )
+            
+            return fig
+        except Exception as e:
+            st.error(f"Error creating chart: {e}")
+            return None
+
+    def run(self):
+        """Main application loop"""
+        # Custom CSS
+        st.markdown("""
+        <style>
+        .main-header {
+            font-size: 3rem;
+            color: #1f77b4;
+            text-align: center;
+            margin-bottom: 2rem;
         }
-    else:
-        colors = {
-            'bg': '#f6f7fb',
-            'sidebar_bg': '#ffffff',
-            'panel': '#ffffff',
-            'panel_light': '#f9fafc',
-            'muted': '#eef1f7',
-            'text': '#1f2430',
-            'subtext': '#667085',
-            'primary': '#2e6df6',
-            'success': '#2ec27e',
-            'warning': '#f0b429',
-            'danger': '#ef476f',
-            'border': '#e4e7ec'
+        .stock-card {
+            background-color: #f0f2f6;
+            padding: 1rem;
+            border-radius: 10px;
+            margin: 0.5rem 0;
         }
-
-    st.markdown(f"""
-    <style>
-    .stApp {{
-        background-color: {colors['bg']};
-        color: {colors['text']};
-    }}
-    
-    .css-1d391kg, .css-12oz5g7, .stSidebar > div {{
-        background-color: {colors['sidebar_bg']};
-    }}
-    
-    .metric-card {{
-        background: {colors['panel']};
-        padding: 24px;
-        border-radius: 16px;
-        border: 1px solid {colors['border']};
-        margin-bottom: 16px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        transition: all 0.2s ease;
-    }}
-    
-    .metric-card:hover {{
-        transform: translateY(-2px);
-        box-shadow: 0 4px 20px rgba(79,140,255,0.15);
-    }}
-    
-    .metric-title {{
-        font-size: 14px;
-        font-weight: 600;
-        color: {colors['subtext']};
-        margin-bottom: 8px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }}
-    
-    .metric-value {{
-        font-size: 32px;
-        font-weight: 700;
-        color: {colors['text']};
-        margin-bottom: 12px;
-        line-height: 1;
-    }}
-    
-    .status-pill {{
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 8px 16px;
-        border-radius: 24px;
-        font-size: 14px;
-        font-weight: 600;
-        margin: 4px 8px 4px 0;
-    }}
-    
-    .pill-success {{
-        background: rgba(46,194,126,0.15);
-        color: {colors['success']};
-        border: 1px solid rgba(46,194,126,0.3);
-    }}
-    
-    .pill-warning {{
-        background: rgba(240,180,41,0.15);
-        color: {colors['warning']};
-        border: 1px solid rgba(240,180,41,0.3);
-    }}
-    
-    .pill-danger {{
-        background: rgba(239,71,111,0.15);
-        color: {colors['danger']};
-        border: 1px solid rgba(239,71,111,0.3);
-    }}
-    
-    .pill-neutral {{
-        background: {colors['muted']};
-        color: {colors['subtext']};
-        border: 1px solid {colors['border']};
-    }}
-    
-    .news-card {{
-        background: {colors['panel']};
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid {colors['border']};
-        margin-bottom: 12px;
-        transition: all 0.2s ease;
-    }}
-    
-    .news-card:hover {{
-        border-color: {colors['primary']};
-        transform: translateY(-1px);
-    }}
-    
-    .news-title {{
-        font-size: 16px;
-        font-weight: 600;
-        color: {colors['text']};
-        margin-bottom: 8px;
-        line-height: 1.4;
-    }}
-    
-    .news-meta {{
-        font-size: 12px;
-        color: {colors['subtext']};
-        margin-bottom: 12px;
-    }}
-    
-    .chart-container {{
-        background: {colors['panel']};
-        padding: 24px;
-        border-radius: 16px;
-        border: 1px solid {colors['border']};
-        margin-bottom: 20px;
-    }}
-    
-    .chart-title {{
-        font-size: 18px;
-        font-weight: 600;
-        color: {colors['text']};
-        margin-bottom: 16px;
-    }}
-    
-    .sector-tag {{
-        display: inline-block;
-        background: {colors['muted']};
-        color: {colors['subtext']};
-        padding: 4px 12px;
-        border-radius: 16px;
-        font-size: 12px;
-        font-weight: 500;
-        margin: 2px 4px 2px 0;
-        border: 1px solid {colors['border']};
-    }}
-    
-    .query-response {{
-        background: {colors['panel']};
-        border: 1px solid {colors['border']};
-        border-radius: 12px;
-        padding: 20px;
-        margin: 16px 0;
-    }}
-    
-    .code-block {{
-        background: {colors['muted']};
-        border-radius: 8px;
-        padding: 16px;
-        font-family: monospace;
-        font-size: 12px;
-        color: {colors['text']};
-        overflow-x: auto;
-        margin: 12px 0;
-    }}
-    
-    .sidebar-title {{
-        font-size: 20px;
-        font-weight: 700;
-        color: {colors['text']};
-        margin-bottom: 24px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }}
-    
-    #MainMenu {{visibility: hidden;}}
-    footer {{visibility: hidden;}}
-    header {{visibility: hidden;}}
-    </style>
-    """, unsafe_allow_html=True)
-
-def display_system_status():
-    """Display system status in the sidebar"""
-    if st.session_state.controller is None:
-        st.sidebar.error("⚠️ AI System Offline")
-        return
-    
-    try:
-        health = st.session_state.controller.health_check()
-        system_info = st.session_state.controller.get_system_info()
-        
-        if health['overall_status'] == 'healthy':
-            st.sidebar.success("✅ AI System Healthy")
-        elif health['overall_status'] == 'degraded':
-            st.sidebar.warning("⚠️ AI System Degraded")
-        else:
-            st.sidebar.error("❌ AI System Critical")
-        
-        # Agent status
-        agent_status = system_info.get('system_status', {})
-        active_agents = sum(1 for status in agent_status.values() if status)
-        total_agents = len(agent_status)
-        
-        st.sidebar.metric("Active Agents", f"{active_agents}/{total_agents}")
-        
-        # Memory stats
-        if 'memory_stats' in system_info:
-            memory_stats = system_info['memory_stats']
-            st.sidebar.metric("Session Memory", 
-                            f"{memory_stats.get('total_sessions', 0)} sessions")
-        
-    except Exception as e:
-        st.sidebar.error(f"Status Error: {str(e)[:50]}...")
-
-def create_sample_chart():
-    """Create a sample chart for the dashboard"""
-    dates = pd.date_range(start='2023-01-01', end='2023-12-31', freq='D')
-    np.random.seed(42)
-    
-    base_price = 69000
-    returns = np.random.normal(0.0002, 0.015, len(dates))
-    prices = [base_price]
-    
-    for ret in returns:
-        prices.append(prices[-1] * (1 + ret))
-    
-    df = pd.DataFrame({
-        'Date': dates,
-        'Price': prices[1:]
-    })
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df['Date'],
-        y=df['Price'],
-        mode='lines',
-        name='FTSE/JSE Top 40',
-        line=dict(color='#4f8cff', width=2),
-        fill='tonexty' if st.session_state["theme"] == "dark" else None,
-        fillcolor='rgba(79,140,255,0.1)' if st.session_state["theme"] == "dark" else None
-    ))
-    
-    bg_color = '#1e2530' if st.session_state["theme"] == "dark" else '#ffffff'
-    text_color = '#e8ebf1' if st.session_state["theme"] == "dark" else '#1f2430'
-    grid_color = '#2a3441' if st.session_state["theme"] == "dark" else '#eef1f7'
-    
-    fig.update_layout(
-        height=300,
-        margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor=bg_color,
-        plot_bgcolor=bg_color,
-        font=dict(color=text_color),
-        xaxis=dict(showgrid=True, gridcolor=grid_color, showline=False, zeroline=False),
-        yaxis=dict(showgrid=True, gridcolor=grid_color, showline=False, zeroline=False),
-        showlegend=False
-    )
-    
-    return fig
-
-def process_financial_query(query):
-    """Process a financial query using the AI system"""
-    if st.session_state.controller is None:
-        return {"error": "AI system not available"}
-    
-    try:
-        with st.spinner("🤖 AI analyzing your query..."):
-            start_time = time.time()
-            result = st.session_state.controller.process_user_query(query)
-            processing_time = time.time() - start_time
-            
-            # Add to history
-            st.session_state.query_history.insert(0, {
-                "query": query,
-                "timestamp": datetime.now(),
-                "result": result,
-                "processing_time": processing_time
-            })
-            
-            # Keep only last 10 queries
-            if len(st.session_state.query_history) > 10:
-                st.session_state.query_history = st.session_state.query_history[:10]
-            
-            return result
-            
-    except Exception as e:
-        error_result = {
-            "error": True,
-            "advisor_full_response": f"Error processing query: {str(e)}",
-            "summary": "Query processing failed",
-            "session_id": "error"
+        .news-card {
+            background-color: #ffffff;
+            border-left: 4px solid #1f77b4;
+            padding: 1rem;
+            margin: 0.5rem 0;
+            border-radius: 5px;
         }
-        return error_result
-
-def display_query_result(result):
-    """Display the AI query result in a formatted way"""
-    if result.get("error"):
-        st.error(f"❌ {result.get('advisor_full_response', 'Unknown error')}")
-        return
-    
-    # Main advisor response
-    st.markdown("### 🎯 Financial Advice")
-    advisor_response = result.get("advisor_full_response", "No response available")
-    st.markdown(f'<div class="query-response">{advisor_response}</div>', unsafe_allow_html=True)
-    
-    # Summary and insights
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("#### 📋 Quick Summary")
-        summary = result.get("summary", "No summary available")
-        st.info(summary)
+        </style>
+        """, unsafe_allow_html=True)
         
-    with col2:
-        st.markdown("#### 💡 Key Insights")
-        insights = result.get("detailed_insights", "No insights available")
-        st.info(insights)
-    
-    # Executive summary
-    exec_summary = result.get("executive_summary", {})
-    if exec_summary and not exec_summary.get("error"):
-        st.markdown("#### 📊 Executive Summary")
-        
-        tabs = st.tabs(["Key Takeaways", "Recommendations", "Risks", "Actions"])
-        
-        with tabs[0]:
-            st.write(exec_summary.get("key_takeaways", "Not available"))
-        
-        with tabs[1]:
-            st.write(exec_summary.get("investment_recommendation", "Not available"))
-            
-        with tabs[2]:
-            st.write(exec_summary.get("risk_assessment", "Not available"))
-            
-        with tabs[3]:
-            st.write(exec_summary.get("action_items", "Not available"))
-    
-    # Data analysis results
-    analysis_results = result.get("analysis_results")
-    if analysis_results and not analysis_results.get("error"):
-        st.markdown("#### 📈 Data Analysis")
-        
-        # Data insights
-        data_insights = analysis_results.get("data_insights", "")
-        if data_insights:
-            st.write("**Market Insights:**")
-            st.write(data_insights)
-        
-        # Generated code
-        analysis_code = analysis_results.get("analysis_code", "")
-        if analysis_code:
-            with st.expander("📄 View Generated Analysis Code"):
-                st.code(analysis_code, language="python")
-    
-    # Web context
-    web_context = result.get("web_context", [])
-    if web_context:
-        st.markdown("#### 📰 Related Market News")
-        for i, article in enumerate(web_context[:3], 1):
-            st.markdown(f"""
-            <div class="news-card">
-                <div class="news-title">{article.get('headline', 'No headline')}</div>
-                <div class="news-meta">{article.get('source', 'Unknown')} • JSE Market News</div>
-                <p style="color: #a7b0c0; font-size: 14px; margin: 8px 0;">{article.get('summary', 'No summary')[:150]}...</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Session info
-    with st.expander("ℹ️ Session Information"):
-        st.json({
-            "Session ID": result.get("session_id", "unknown"),
-            "Request Type": result.get("request_type", "unknown"),
-            "Memory Used": result.get("memory_used", False),
-            "System Status": result.get("system_status", {})
-        })
-
-def main():
-    """Main application function"""
-    # Initialize session state FIRST
-    initialize_session_state()
-    
-    # Apply theme styles AFTER session state is initialized
-    apply_theme_styles()
-    
-    # Initialize controller if not done
-    if st.session_state.controller is None and CONTROLLER_AVAILABLE:
-        controller, status = initialize_controller()
-        st.session_state.controller = controller
-        st.session_state.controller_status = status
-    
-    # Sidebar
-    with st.sidebar:
-        st.markdown('<div class="sidebar-title">📈 JSE AI Advisory</div>', unsafe_allow_html=True)
-        
-        # System status
-        display_system_status()
-        
-        st.markdown("---")
-        
-        # Navigation
-        sections = ["dashboard", "advisor", "datasci", "news", "logs", "settings"]
-        labels = ["🏠 Dashboard", "💡 AI Advisor", "📊 Data Explorer", "📰 Market News", "🧪 System Logs", "⚙️ Settings"]
-        
-        for sec, label in zip(sections, labels):
-            if st.button(label, key=f"nav_{sec}", use_container_width=True):
-                st.session_state["section"] = sec
-                st.rerun()
-        
-        # Theme toggle
-        st.markdown("---")
-        if st.button("🌗 Toggle Theme", key="theme_toggle", use_container_width=True):
-            st.session_state["theme"] = "light" if st.session_state["theme"] == "dark" else "dark"
-            st.rerun()
-        
-        st.markdown('<p style="color: #a7b0c0; font-size: 12px; margin-top: 16px;">JSE-focused AI financial advisor</p>', unsafe_allow_html=True)
-
-    # Main content area
-    if st.session_state["section"] == "dashboard":
         # Header
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown("# JSE Market Dashboard")
-        with col2:
-            if st.button("🔄 Refresh Data", key="refresh_btn"):
-                st.rerun()
+        st.markdown('<h1 class="main-header">🏛️ JSE Financial Advisor</h1>', unsafe_allow_html=True)
         
-        # Quick query bar
-        st.markdown("### 🤖 Quick AI Query")
-        query_col1, query_col2 = st.columns([4, 1])
+        # Initialize system if not already done
+        if self.controller is None:
+            if not self.initialize_system():
+                st.error("Failed to initialize the system. Please refresh the page.")
+                return
         
-        with query_col1:
-            quick_query = st.text_input("", 
-                placeholder="Ask about JSE stocks, sectors, or get investment advice...", 
-                label_visibility="collapsed",
-                key="quick_query")
+        # Sidebar
+        st.sidebar.title("📊 Dashboard Controls")
         
-        with query_col2:
-            if st.button("Ask AI", type="primary", disabled=(not CONTROLLER_AVAILABLE or st.session_state.controller is None)):
-                if quick_query:
-                    result = process_financial_query(quick_query)
-                    st.session_state.current_analysis = result
-                    st.rerun()
+        # Separate refresh toggles for each tab
+        st.sidebar.subheader("🔄 Refresh Settings")
         
-        # Display current analysis if available
-        if st.session_state.current_analysis:
-            st.markdown("---")
-            display_query_result(st.session_state.current_analysis)
+        market_auto_refresh = st.sidebar.checkbox("Auto-refresh Markets", value=True, key="market_auto_refresh")
+        market_refresh_interval = st.sidebar.slider("Market Refresh (seconds)", 10, 300, 30, key="market_refresh_interval")
         
-        st.markdown("---")
+        news_auto_refresh = st.sidebar.checkbox("Auto-refresh News", value=False, key="news_auto_refresh")
+        news_refresh_interval = st.sidebar.slider("News Refresh (seconds)", 30, 600, 60, key="news_refresh_interval")
         
-        # Dashboard metrics and charts
-        col1, col2, col3 = st.columns(3)
+        # Display conversation history
+        self.display_conversation_history()
         
-        with col1:
-            st.markdown("""
-            <div class="metric-card">
-                <div class="metric-title">FTSE/JSE Top 40</div>
-                <div class="metric-value">69,842</div>
-                <div class="status-pill pill-success">▲ 0.76% Today</div>
-            </div>
-            """, unsafe_allow_html=True)
+        # System info
+        with st.sidebar.expander("🔧 System Info", expanded=False):
+            if self.controller is not None:
+                health = self.controller.health_check()
+                st.write(f"**Status:** {health['overall_status'].upper()}")
+                
+                if self.controller.agents.get('memory'):
+                    memory_stats = self.controller.agents['memory'].get_memory_stats()
+                    st.write(f"**Memory Sessions:** {memory_stats.get('total_sessions', 0)}")
         
-        with col2:
-            st.markdown("""
-            <div class="metric-card">
-                <div class="metric-title">All Share (ALSI)</div>
-                <div class="metric-value">80,115</div>
-                <div class="status-pill pill-warning">● Flat</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col3:
-            ai_status = "Online" if st.session_state.controller else "Offline"
-            ai_pill_class = "pill-success" if st.session_state.controller else "pill-danger"
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-title">AI Advisor Status</div>
-                <div class="metric-value">{ai_status}</div>
-                <div class="status-pill {ai_pill_class}">{'🤖 Ready' if st.session_state.controller else '⚠️ Unavailable'}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # Charts row
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.markdown('<div class="chart-container"><div class="chart-title">Market Overview</div></div>', unsafe_allow_html=True)
-            fig = create_sample_chart()
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            st.markdown('<div class="chart-container"><div class="chart-title">Recent Queries</div></div>', unsafe_allow_html=True)
-            
-            if st.session_state.query_history:
-                for i, query_item in enumerate(st.session_state.query_history[:3]):
-                    timestamp = query_item["timestamp"].strftime("%H:%M")
-                    query_text = query_item["query"][:50] + "..." if len(query_item["query"]) > 50 else query_item["query"]
-                    processing_time = f"{query_item['processing_time']:.1f}s"
-                    
-                    st.markdown(f"""
-                    <div class="news-card">
-                        <div class="news-title">{query_text}</div>
-                        <div class="news-meta">{timestamp} • {processing_time}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("No recent queries")
-
-    elif st.session_state["section"] == "advisor":
-        st.markdown("# 🤖 AI Financial Advisor")
-        
-        if not CONTROLLER_AVAILABLE or st.session_state.controller is None:
-            st.error("AI Advisory System is not available. Please check system configuration.")
-            return
-        
-        # Query input
-        st.markdown("### Ask Your Financial Question")
-        user_query = st.text_area("", 
-            placeholder="Example: Should I diversify my portfolio if I only hold JSE banking stocks?",
-            height=100,
-            label_visibility="collapsed")
-        
-        col1, col2, col3 = st.columns([1, 1, 2])
-        
-        with col1:
-            if st.button("🎯 Get Advice", type="primary", disabled=not user_query.strip()):
-                if user_query.strip():
-                    result = process_financial_query(user_query.strip())
-                    display_query_result(result)
-        
-        with col2:
-            if st.button("📋 Example Query"):
-                example_queries = [
-                    "Should I diversify my JSE banking portfolio?",
-                    "What are the trends for AGL and NPN stocks?",
-                    "How is the JSE mining sector performing?",
-                    "What should I consider when investing in MTN shares?"
-                ]
-                st.session_state.example_query = np.random.choice(example_queries)
-                st.rerun()
-        
-        # Show example query if set
-        if st.session_state.example_query:
-            st.info(f"💡 Example: {st.session_state.example_query}")
-            if st.button("Use This Example"):
-                result = process_financial_query(st.session_state.example_query)
-                display_query_result(result)
-        
-        # Query history
-        if st.session_state.query_history:
-            st.markdown("### 📚 Query History")
-            
-            for i, query_item in enumerate(st.session_state.query_history[:5]):
-                with st.expander(f"Query {i+1}: {query_item['query'][:60]}..."):
-                    st.markdown(f"**Timestamp:** {query_item['timestamp']}")
-                    st.markdown(f"**Processing Time:** {query_item['processing_time']:.1f}s")
-                    
-                    if st.button(f"View Results", key=f"view_result_{i}"):
-                        display_query_result(query_item['result'])
-
-    elif st.session_state["section"] == "datasci":
-        st.markdown("# 📊 Data Explorer")
-        
-        st.info("💡 Tip: Ask the AI Advisor to generate data visualizations by including requests like 'show me a chart' or 'visualize the data'")
-        
-        # Data explorer interface
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            ticker = st.text_input("Ticker", placeholder="e.g., NPN.JO, AGL.JO")
-        with col2:
-            start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=365))
-        with col3:
-            end_date = st.date_input("End Date", value=datetime.now())
-        
-        analysis_type = st.selectbox("Analysis Type", [
-            "Price Trends", "Moving Averages", "Volume Analysis", 
-            "Volatility (ATR)", "Returns & Drawdowns"
+        # Create tabs
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🎯 Advisor Chat", 
+            "📈 Live Markets", 
+            "📰 News Feed", 
+            "📊 Analysis Tools"
         ])
         
-        if st.button("🤖 Generate AI Analysis", type="primary"):
-            if ticker:
-                ai_query = f"Analyze {ticker} stock for {analysis_type.lower()} from {start_date} to {end_date}. Show me a chart and provide insights."
-                result = process_financial_query(ai_query)
-                display_query_result(result)
-            else:
-                st.warning("Please enter a ticker symbol")
-
-    elif st.session_state["section"] == "logs":
-        st.markdown("# 🧪 System Logs & Validation")
+        # Store current tab
+        if tab1:
+            st.session_state.current_tab = "🎯 Advisor Chat"
+        if tab2:
+            st.session_state.current_tab = "📈 Live Markets"
+        if tab3:
+            st.session_state.current_tab = "📰 News Feed"
+        if tab4:
+            st.session_state.current_tab = "📊 Analysis Tools"
         
-        if st.session_state.controller:
-            # System health check
-            health = st.session_state.controller.health_check()
-            system_info = st.session_state.controller.get_system_info()
+        # Render each tab
+        with tab1:
+            self.render_advisor_chat()
+        
+        with tab2:
+            self.render_live_markets(market_auto_refresh, market_refresh_interval)
+        
+        with tab3:
+            self.render_news_feed(news_auto_refresh, news_refresh_interval)
+        
+        with tab4:
+            self.render_analysis_tools()
+
+    def display_conversation_history(self):
+        """Display conversation history"""
+        if st.session_state.conversation_history:
+            st.sidebar.subheader("💬 Conversation History")
+            for i, (query, response) in enumerate(reversed(st.session_state.conversation_history[-5:])):
+                with st.sidebar.expander(f"Q: {query[:50]}...", expanded=False):
+                    st.write(f"**Q:** {query}")
+                    st.write(f"**A:** {response[:200]}...")
+
+    def render_advisor_chat(self):
+        """Render the main advisor chat interface - NO AUTO REFRESH"""
+        st.header("💬 JSE Financial Advisor")
+        
+        # Chat input - use session state to preserve input
+        user_query = st.text_area(
+            "Ask about JSE stocks, market analysis, or financial advice:",
+            value=st.session_state.user_query,
+            placeholder="e.g., Compare MTN and Vodacom performance, What's the outlook for banking stocks?, Explain P/E ratio...",
+            height=100,
+            key="user_query_input"
+        )
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        
+        with col1:
+            analyze_btn = st.button("🚀 Analyze", type="primary", use_container_width=True, key="analyze_btn")
+        with col2:
+            clear_btn = st.button("🗑️ Clear History", use_container_width=True, key="clear_btn")
+        with col3:
+            example_btn = st.button("💡 Show Examples", use_container_width=True, key="example_btn")
+        
+        if example_btn:
+            st.info("""
+            **Example Queries:**
+            - Compare MTN and Vodacom stock performance
+            - What's happening with Standard Bank shares?
+            - Show me mining sector analysis
+            - Explain dividend yield for JSE investors
+            - Create portfolio allocation for MTN 40%, NPN 30%, SBK 30%
+            - Show me candlestick chart for Anglo American
+            """)
+        
+        if clear_btn:
+            if self.controller is not None:
+                self.controller.reset_conversation()
+                st.session_state.conversation_history = []
+                st.session_state.user_query = ""
+            st.rerun()
+        
+        if analyze_btn and user_query and self.controller is not None:
+            with st.spinner("🔍 Analyzing your query..."):
+                try:
+                    # Process the query
+                    response = self.controller.process_user_query(user_query)
+                    
+                    # Update conversation history in session state
+                    st.session_state.conversation_history.append((user_query, response.get('advisor_full_response', '')))
+                    
+                    # Display response
+                    st.subheader("💡 Advisor Analysis")
+                    
+                    # Main response
+                    st.write(response.get('advisor_full_response', 'No response generated'))
+                    
+                    # Market data context
+                    market_data = response.get('market_data_context')
+                    if market_data and "unavailable" not in str(market_data).lower():
+                        with st.expander("📊 Market Data", expanded=True):
+                            st.text(market_data)
+                    
+                    # News context
+                    articles = response.get('web_context', [])
+                    if articles:
+                        with st.expander(f"📰 Relevant News ({len(articles)} articles)", expanded=False):
+                            for article in articles:
+                                st.write(f"**{article.get('headline', 'No headline')}**")
+                                st.write(f"*Source: {article.get('source', 'Unknown')}*")
+                                st.write(f"{article.get('summary', 'No summary available')}")
+                                st.divider()
+                    
+                    # Analysis results
+                    analysis = response.get('analysis_results')
+                    if analysis:
+                        with st.expander("🔬 Data Analysis", expanded=False):
+                            st.write(f"**Analysis Type:** {analysis.get('analysis_type', 'N/A')}")
+                            st.write(f"**Stocks Analyzed:** {analysis.get('stocks_analyzed', [])}")
+                            
+                            insights = analysis.get('insights')
+                            if insights:
+                                st.write("**Insights:**")
+                                st.write(insights)
+                            
+                            # Show code for visualization if available
+                            code = analysis.get('code')
+                            if code and len(code) > 100:
+                                with st.expander("🐍 Generated Analysis Code", expanded=False):
+                                    st.code(code, language='python')
+                    
+                    # Clear the input after successful analysis
+                    st.session_state.user_query = ""
+                    
+                except Exception as e:
+                    st.error(f"Error processing query: {e}")
+
+    def render_live_markets(self, auto_refresh: bool, refresh_interval: int):
+        """Render live markets dashboard with independent refresh"""
+        st.header("📈 Live JSE Market Data")
+        
+        # Major JSE stocks to monitor
+        major_tickers = ['MTN.JO', 'NPN.JO', 'SBK.JO', 'FSR.JO', 'AGL.JO', 'SOL.JO', 'VOD.JO', 'CPI.JO']
+        
+        # Check if we need to refresh data - ONLY for this tab
+        refresh_data = False
+        if auto_refresh and st.session_state.current_tab == "📈 Live Markets":
+            current_time = datetime.now()
+            if (st.session_state.last_market_refresh is None or 
+                (current_time - st.session_state.last_market_refresh).total_seconds() >= refresh_interval):
+                refresh_data = True
+                st.session_state.last_market_refresh = current_time
+        else:
+            # Manual refresh button
+            if st.button("🔄 Refresh Market Data", key="refresh_market_data"):
+                refresh_data = True
+                st.session_state.last_market_refresh = datetime.now()
+        
+        # Get live data only if refresh is needed
+        if refresh_data or st.session_state.stock_data.empty:
+            with st.spinner("📊 Fetching live market data..."):
+                st.session_state.stock_data = self.get_live_stock_data_cached(major_tickers)
+        
+        if not st.session_state.stock_data.empty:
+            # Display last refresh time
+            if st.session_state.last_market_refresh:
+                st.caption(f"Last updated: {st.session_state.last_market_refresh.strftime('%H:%M:%S')}")
             
-            col1, col2 = st.columns(2)
+            # Display stock table
+            st.subheader("💰 Live Stock Prices")
+            st.dataframe(
+                st.session_state.stock_data,
+                use_container_width=True,
+                hide_index=True
+            )
             
-            with col1:
-                st.markdown("### System Health")
-                status_color = {"healthy": "success", "degraded": "warning", "critical": "error"}
-                getattr(st, status_color.get(health['overall_status'], 'info'))(
-                    f"Status: {health['overall_status'].title()}"
+            # Stock price charts
+            st.subheader("📊 Stock Price Charts")
+            selected_ticker = st.selectbox(
+                "Select stock for detailed chart:",
+                [ticker.replace('.JO', '') for ticker in major_tickers],
+                key="chart_ticker_select"
+            )
+            
+            if selected_ticker:
+                chart_period = st.selectbox(
+                    "Chart Period:",
+                    ['1mo', '3mo', '6mo', '1y', '2y'],
+                    index=2,
+                    key="chart_period_select"
                 )
                 
-                if health.get('critical_issues'):
-                    st.error("Critical Issues:")
-                    for issue in health['critical_issues']:
-                        st.write(f"• {issue}")
-                
-                if health.get('warnings'):
-                    st.warning("Warnings:")
-                    for warning in health['warnings']:
-                        st.write(f"• {warning}")
+                fig = self.create_stock_price_chart(selected_ticker + '.JO', chart_period)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning(f"Could not load chart data for {selected_ticker}")
             
+            # Market summary
+            st.subheader("📈 Market Summary")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            up_stocks = len(st.session_state.stock_data[st.session_state.stock_data['Change (R)'].str.contains('\+')])
+            down_stocks = len(st.session_state.stock_data[st.session_state.stock_data['Change (R)'].str.contains('-')])
+            total_stocks = len(st.session_state.stock_data)
+            
+            with col1:
+                st.metric("Total Stocks", total_stocks)
             with col2:
-                st.markdown("### Agent Status")
-                agent_health = health.get('agent_health', {})
-                for agent, status in agent_health.items():
-                    status_icon = {"healthy": "✅", "failed": "❌", "degraded": "⚠️"}
-                    st.write(f"{status_icon.get(status, '❓')} {agent}: {status}")
-            
-            st.markdown("### System Information")
-            with st.expander("View Full System Info"):
-                st.json(system_info)
-        
+                st.metric("Advancing", up_stocks, delta=f"+{up_stocks}")
+            with col3:
+                st.metric("Declining", down_stocks, delta=f"-{down_stocks}", delta_color="inverse")
+            with col4:
+                if total_stocks > 0:
+                    adv_dec_ratio = up_stocks / total_stocks
+                    st.metric("Advance/Decline Ratio", f"{adv_dec_ratio:.2f}")
         else:
-            st.error("System not initialized - cannot display logs")
+            st.warning("Unable to fetch live market data. Please check your internet connection.")
 
-    elif st.session_state["section"] == "news":
-        st.markdown("# 📰 Market News")
-        st.info("News section coming soon...")
+    def render_news_feed(self, auto_refresh: bool, refresh_interval: int):
+        """Render live news feed with independent refresh"""
+        st.header("📰 JSE Market News")
+        
+        # Check if we need to refresh data - ONLY for this tab
+        refresh_data = False
+        if auto_refresh and st.session_state.current_tab == "📰 News Feed":
+            current_time = datetime.now()
+            if (st.session_state.last_news_refresh is None or 
+                (current_time - st.session_state.last_news_refresh).total_seconds() >= refresh_interval):
+                refresh_data = True
+                st.session_state.last_news_refresh = current_time
+        else:
+            # Manual refresh button
+            if st.button("🔄 Refresh News", key="refresh_news_data"):
+                refresh_data = True
+                st.session_state.last_news_refresh = datetime.now()
+        
+        # Get live news only if refresh is needed
+        if refresh_data or not st.session_state.news_data:
+            with st.spinner("📰 Fetching latest news..."):
+                st.session_state.news_data = self.get_live_news_cached(limit=15)
+        
+        if st.session_state.news_data:
+            # Display last refresh time
+            if st.session_state.last_news_refresh:
+                st.caption(f"Last updated: {st.session_state.last_news_refresh.strftime('%H:%M:%S')}")
+            
+            st.subheader(f"📢 Latest Market News ({len(st.session_state.news_data)} articles)")
+            
+            for i, article in enumerate(st.session_state.news_data):
+                # Create a nice news card
+                with st.expander(f"📰 {article.get('headline', 'No headline')[:80]}...", expanded=False):
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.write(f"**{article.get('headline', 'No headline')}**")
+                        st.write(f"**Stock:** {article.get('ticker', 'N/A').replace('.JO', '')}")
+                        st.write(article.get('summary', 'No summary available'))
+                        
+                        if article.get('link'):
+                            st.markdown(f"[Read full article]({article.get('link')})")
+                    
+                    with col2:
+                        st.write(f"*Source: {article.get('source', 'Unknown source')}*")
+                        if article.get('published'):
+                            st.write(f"*Published: {article.get('published')}*")
+        else:
+            st.warning("Unable to fetch news articles. Please check your internet connection.")
+        
+        # News search
+        st.subheader("🔍 Search Specific Stock News")
+        search_ticker = st.text_input("Enter stock ticker (e.g., MTN, SBK, NPN):", placeholder="MTN", key="news_search_input")
+        
+        if st.button("Search News", key="search_news_btn") and search_ticker:
+            with st.spinner(f"🔍 Searching news for {search_ticker}..."):
+                try:
+                    from Model.web_model import WebSupplementationAgent
+                    web_agent = WebSupplementationAgent()
+                    
+                    # Resolve ticker
+                    companies = web_agent._resolve_tickers(search_ticker)
+                    if companies:
+                        ticker, name = companies[0]
+                        articles = web_agent.fetch_articles_from_google_rss([(ticker, name)], max_per=5)
+                        
+                        if articles:
+                            st.write(f"### 📰 News for {name}")
+                            for article in articles:
+                                with st.expander(f"**{article.get('headline')}**", expanded=False):
+                                    st.write(f"*Source: {article.get('source', 'Unknown')}*")
+                                    st.write(article.get('summary', 'No summary'))
+                        else:
+                            st.warning(f"No recent news found for {search_ticker}")
+                    else:
+                        st.warning(f"Could not find stock: {search_ticker}")
+                except Exception as e:
+                    st.error(f"Error searching news: {e}")
+
+    def render_analysis_tools(self):
+        """Render analysis tools and utilities - NO AUTO REFRESH"""
+        st.header("📊 JSE Analysis Tools")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📈 Quick Analysis")
+            
+            analysis_type = st.selectbox(
+                "Select Analysis Type:",
+                [
+                    "Stock Price Trends",
+                    "Moving Averages", 
+                    "Volume Analysis",
+                    "Correlation Matrix",
+                    "Portfolio Allocation"
+                ],
+                key="analysis_type_select"
+            )
+            
+            selected_stocks = st.multiselect(
+                "Select Stocks:",
+                ["MTN", "NPN", "SBK", "FSR", "AGL", "SOL", "VOD", "CPI", "ANG", "GFI"],
+                default=["MTN", "NPN", "SBK"],
+                key="selected_stocks_multiselect"
+            )
+            
+            time_period = st.selectbox(
+                "Time Period:",
+                ["1mo", "3mo", "6mo", "1y", "2y"],
+                index=2,
+                key="time_period_select"
+            )
+            
+            if st.button("🚀 Run Analysis", type="primary", key="run_analysis_btn"):
+                if selected_stocks and self.controller is not None:
+                    query_map = {
+                        "Stock Price Trends": f"Show me price trends for {', '.join(selected_stocks)} over {time_period}",
+                        "Moving Averages": f"Plot moving averages for {', '.join(selected_stocks)}",
+                        "Volume Analysis": f"Analyze trading volume for {', '.join(selected_stocks)}",
+                        "Correlation Matrix": f"Create correlation matrix for {', '.join(selected_stocks)}",
+                        "Portfolio Allocation": f"Show portfolio allocation for {', '.join(selected_stocks)}"
+                    }
+                    
+                    query = query_map.get(analysis_type, f"Analyze {', '.join(selected_stocks)}")
+                    
+                    with st.spinner("🔍 Running analysis..."):
+                        response = self.controller.process_user_query(query)
+                        
+                        # Display results
+                        st.subheader("💡 Analysis Results")
+                        st.write(response.get('advisor_full_response', 'No response'))
+                        
+                        # Show generated code if available
+                        analysis = response.get('analysis_results')
+                        if analysis and analysis.get('code'):
+                            with st.expander("🐍 View Generated Analysis Code"):
+                                st.code(analysis['code'], language='python')
+                else:
+                    st.warning("Please select at least one stock.")
+        
+        with col2:
+            st.subheader("🔧 System Utilities")
+            
+            if self.controller is not None:
+                # System info
+                st.write("### 🖥️ System Information")
+                health = self.controller.health_check()
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.metric("Overall Status", health['overall_status'].upper())
+                    st.metric("Active Agents", sum(1 for s in health['agent_statuses'].values() if 'Active' in s or 'Template' in s))
+                with col_b:
+                    st.metric("Conversation History", f"{len(st.session_state.conversation_history)}")
+                    if self.controller.agents.get('memory'):
+                        memory_stats = self.controller.agents['memory'].get_memory_stats()
+                        st.metric("Memory Sessions", memory_stats.get('total_sessions', 0))
+                
+                st.divider()
+                
+                # Quick actions
+                st.write("### ⚡ Quick Actions")
+                
+                if st.button("🔄 Refresh All Data", use_container_width=True, key="refresh_all_btn"):
+                    # Clear cached data to force refresh
+                    st.cache_data.clear()
+                    st.session_state.stock_data = pd.DataFrame()
+                    st.session_state.news_data = []
+                    st.session_state.last_market_refresh = None
+                    st.session_state.last_news_refresh = None
+                    st.rerun()
+
+def main():
+    """Main application entry point"""
+    # Initialize the app
+    if 'app' not in st.session_state:
+        st.session_state.app = JSEAdvisoryApp()
     
-    elif st.session_state["section"] == "settings":
-        st.markdown("# ⚙️ Settings")
-        st.info("Settings section coming soon...")
+    # Run the app
+    st.session_state.app.run()
 
-# Entry point
 if __name__ == "__main__":
     main()

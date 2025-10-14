@@ -1,340 +1,421 @@
-# web_model/web_supplementation_agent.py
-import requests
-from bs4 import BeautifulSoup
-import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+# web_model.py - ENHANCED VERSION with async support
 import re
-from urllib.parse import urljoin, urlparse
 import time
+import asyncio
+import aiohttp
+import requests
+from urllib.parse import quote_plus
+from typing import Dict, Any, List, Tuple
+import yfinance as yf
+import feedparser
+from requests.exceptions import HTTPError, ConnectionError, Timeout
+import pandas as pd
+from datetime import datetime, timedelta
 
 class WebSupplementationAgent:
-    def __init__(self, model_name="google/flan-t5-small"):
-        # Using FLAN-T5 for summarization - it's not gated and good at text summarization
-        self.model_name = model_name
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(
-                model_name,
-                torch_dtype=self.dtype,
-                device_map="auto" if torch.cuda.is_available() else None
-            ).to(self.device)
-        except Exception as e:
-            print(f"[WebSupplementationAgent] Error loading model {model_name}: {e}")
-            # Fallback to a basic approach without ML summarization
-            self.model = None
-            self.tokenizer = None
-
-        # Default sources with better search URLs
-        self.sources = {
-            "fin24": "https://www.fin24.com/search?query={query}",
-            "moneyweb": "https://www.moneyweb.co.za/search/{query}/"
-        }
-
-        # Headers to avoid blocking
+    def __init__(self):
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        
+        # Enhanced JSE company database
+        self.company_to_ticker = {
+            # Banking & Financial Services
+            'standard bank': 'SBK.JO', 
+            'firstrand': 'FSR.JO', 'fnb': 'FSR.JO',
+            'nedbank': 'NED.JO', 
+            'capitec': 'CPI.JO', 
+            'investec': 'INL.JO',
+            'absa': 'ABG.JO',
+            'sanlam': 'SLM.JO',
+            'discovery': 'DSY.JO',
+            'old mutual': 'OMU.JO',
+            
+            # Telecommunications
+            'mtn': 'MTN.JO', 'mtn group': 'MTN.JO',
+            'vodacom': 'VOD.JO', 
+            'telkom': 'TKG.JO',
+            'multichoice': 'MCG.JO',
+            
+            # Mining & Resources
+            'anglo american': 'AGL.JO', 
+            'bhp': 'BHP.JO',
+            'sasol': 'SOL.JO', 
+            'exxaro': 'EXX.JO',
+            'gold fields': 'GFI.JO',
+            'harmony gold': 'HAR.JO',
+            'anglogold ashanti': 'ANG.JO',
+            'impala platinum': 'IMP.JO',
+            'kumba iron ore': 'KIO.JO',
+            
+            # Retail & Consumer
+            'shoprite': 'SHP.JO',
+            'pick n pay': 'PIK.JO',
+            'woolworths': 'WHL.JO',
+            'mr price': 'MRP.JO',
+            'truworths': 'TRU.JO',
+            'foschini': 'TFG.JO',
+            'clicks': 'CLS.JO',
+            'spar': 'SPP.JO',
+            
+            # Industrial & Other
+            'bidvest': 'BVT.JO',
+            'naspers': 'NPN.JO',
+            'prosus': 'PRX.JO',
+            'richemont': 'CFR.JO',
+            'reunert': 'RLO.JO'
         }
 
-    def _clean_url(self, url, base_url):
-        """Clean and make URLs absolute"""
-        if not url:
-            return ""
+    def _resolve_tickers(self, query: str) -> List[Tuple[str, str]]:
+        """Enhanced ticker resolution"""
+        query_lower = query.lower()
+        candidates = []
         
-        # Remove any leading/trailing whitespace
-        url = url.strip()
+        for company_name, ticker in self.company_to_ticker.items():
+            if company_name in query_lower:
+                display_name = company_name.title() + " Limited"
+                candidates.append((ticker, display_name))
         
-        # Make relative URLs absolute
-        if url.startswith('/'):
-            parsed_base = urlparse(base_url)
-            url = f"{parsed_base.scheme}://{parsed_base.netloc}{url}"
-        elif not url.startswith('http'):
-            url = urljoin(base_url, url)
-        
-        return url
+        # Remove duplicates
+        seen = set()
+        return [(ticker, name) for ticker, name in candidates if not (ticker in seen or seen.add(ticker))]
 
-    def _extract_article_content(self, url, source):
-        """Extract main article content from a URL"""
+    def _convert_price_to_rands(self, price):
+        """Convert price from cents to Rands if needed"""
+        if price > 1000:  # Likely in cents
+            return price / 100
+        return price
+
+    def get_structured_market_data(self, companies: List[Tuple[str, str]]) -> str:
+        """Optimized market data fetching"""
+        if not companies:
+            return ""
+
+        market_data_parts = []
+        
+        for ticker, name in companies:
+            try:
+                stock = yf.Ticker(ticker)
+                
+                # Get historical data quickly
+                hist = stock.history(period='2d')
+                
+                if not hist.empty and len(hist) >= 2:
+                    latest_price = self._convert_price_to_rands(hist['Close'].iloc[-1])
+                    previous_close = self._convert_price_to_rands(hist['Close'].iloc[-2])
+                    change = latest_price - previous_close
+                    change_percent = (change / previous_close) * 100
+                    
+                    market_data_parts.append(
+                        f"📊 {name} ({ticker}): "
+                        f"Price: R{latest_price:.2f} | "
+                        f"Change: {change:+.2f} ({change_percent:+.2f}%)"
+                    )
+                else:
+                    # Quick fallback
+                    info = stock.info
+                    current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+                    if current_price:
+                        current_price = self._convert_price_to_rands(current_price)
+                        market_data_parts.append(f"📊 {name} ({ticker}): Price: R{current_price:.2f}")
+                    
+            except Exception as e:
+                market_data_parts.append(f"❌ {name} ({ticker}): Data unavailable")
+
+        return "\n".join(market_data_parts)
+
+    def fetch_articles_from_google_rss(self, companies: List[Tuple[str, str]], max_per: int = 2) -> List[Dict[str, str]]:
+        """Optimized news fetching with timeout"""
+        all_articles = []
+        
+        for ticker, name in companies:
+            try:
+                search_query = f'JSE {name}'
+                rss_url = f"https://news.google.com/rss/search?q={quote_plus(search_query)}&hl=en-ZA"
+                
+                response = requests.get(rss_url, headers=self.headers, timeout=8)
+                response.raise_for_status()
+                
+                feed = feedparser.parse(response.content)
+                
+                for entry in feed.entries[:max_per]:
+                    # Avoid duplicates
+                    if not any(entry.title == existing['headline'] for existing in all_articles):
+                        summary = re.sub(r'<[^>]+>', '', entry.get('summary', entry.title)).strip()
+                        
+                        all_articles.append({
+                            "headline": entry.title,
+                            "ticker": ticker,
+                            "company": name,
+                            "source": entry.get('source', {}).get('title', 'News'),
+                            "summary": summary[:150] + "..." if len(summary) > 150 else summary,
+                        })
+                
+            except Exception:
+                continue  # Skip failed news fetches
+                
+        return all_articles[:6]  # Return max 6 articles
+
+    def get_jse_market_summary(self) -> str:
+        """Get JSE market summary"""
         try:
-            time.sleep(1)  # Be respectful to servers
-            resp = requests.get(url, timeout=10, headers=self.headers)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
+            # Use major stocks as market indicators
+            major_stocks = ['SBK.JO', 'MTN.JO', 'NPN.JO', 'AGL.JO']
+            up_count = 0
+            down_count = 0
+            price_changes = []
             
-            # Remove script and style elements
-            for script in soup(["script", "style", "nav", "footer", "aside"]):
-                script.decompose()
+            for ticker in major_stocks:
+                try:
+                    stock = yf.Ticker(ticker)
+                    hist = stock.history(period='2d')
+                    if len(hist) >= 2:
+                        current = self._convert_price_to_rands(hist['Close'].iloc[-1])
+                        previous = self._convert_price_to_rands(hist['Close'].iloc[-2])
+                        change_percent = ((current - previous) / previous) * 100
+                        price_changes.append(change_percent)
+                        
+                        if change_percent > 0:
+                            up_count += 1
+                        else:
+                            down_count += 1
+                except:
+                    continue
             
-            content = ""
+            if price_changes:
+                avg_change = sum(price_changes) / len(price_changes)
+                sentiment = "🟢 Bullish" if avg_change > 0.5 else "🔴 Bearish" if avg_change < -0.5 else "🟡 Neutral"
+                return f"🏛️ JSE Market: {sentiment} | Avg Change: {avg_change:+.2f}% | Advancers: {up_count}/{len(major_stocks)}"
+            else:
+                return "🏛️ JSE Market: Data temporarily unavailable"
+                
+        except Exception as e:
+            return "🏛️ JSE Market: Summary unavailable"
+
+    def get_relevant_info(self, user_query: str) -> Dict[str, Any]:
+        """Optimized main method"""
+        try:
+            companies = self._resolve_tickers(user_query)
+            market_summary = self.get_jse_market_summary()
             
-            # Try common article content selectors
-            article_selectors = [
-                "article", 
-                ".article-content", 
-                ".post-content", 
-                ".content",
-                "[class*='article']",
-                "[class*='story']",
-                "main"
-            ]
+            if not companies:
+                return {
+                    "articles": [],
+                    "market_data": market_summary,
+                    "tickers_analyzed": []
+                }
+
+            market_data = self.get_structured_market_data(companies)
+            articles = self.fetch_articles_from_google_rss(companies)
             
-            for selector in article_selectors:
-                article_elem = soup.select_one(selector)
-                if article_elem:
-                    # Get all paragraph text
-                    paragraphs = article_elem.find_all(['p', 'div'], recursive=True)
-                    content = ' '.join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
-                    break
-            
-            # Fallback: get all paragraph text from body
-            if not content:
-                paragraphs = soup.find_all('p')
-                content = ' '.join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 50])
-            
-            # Clean up the content
-            content = re.sub(r'\s+', ' ', content)  # Replace multiple whitespace with single space
-            content = content[:2000]  # Limit content length
-            
-            return content if len(content) > 100 else ""  # Only return if substantial content
+            return {
+                "articles": articles,
+                "market_data": f"{market_summary}\n\n{market_data}",
+                "tickers_analyzed": [t[0] for t in companies]
+            }
             
         except Exception as e:
-            print(f"[WebSupplementationAgent] Error extracting content from {url}: {e}")
-            return ""
+            return {
+                "articles": [],
+                "market_data": f"Error: {str(e)}",
+                "tickers_analyzed": []
+            }
 
-    def fetch_articles(self, query, max_articles=5):
+    # =========================================================================
+    # NEW ASYNC METHODS FOR LIVE DASHBOARD PERFORMANCE
+    # =========================================================================
+
+    async def get_live_stock_data(self, tickers: List[str]) -> List[Dict[str, Any]]:
         """
-        Pull articles from predefined sources based on user query.
-        Returns a list of dicts: {headline, url, source, content}.
-        """
-        results = []
-        query_formatted = query.replace(" ", "+")
+        Get live stock data asynchronously for dashboard (FAST!)
         
-        for source, url_template in self.sources.items():
-            search_url = url_template.format(query=query_formatted)
-            try:
-                resp = requests.get(search_url, timeout=10, headers=self.headers)
-                resp.raise_for_status()
-                soup = BeautifulSoup(resp.text, "html.parser")
-                articles = []
-
-                # Source-specific article extraction
-                if source == "fin24":
-                    # Look for article links in search results
-                    article_links = soup.find_all('a', href=True)
-                    for link in article_links[:max_articles]:
-                        href = link.get('href', '')
-                        if '/news/' in href or '/markets/' in href or '/economy/' in href:
-                            headline = link.get_text(strip=True)
-                            if headline and len(headline) > 10:  # Filter out short/empty headlines
-                                full_url = self._clean_url(href, "https://www.fin24.com")
-                                articles.append({
-                                    "headline": headline,
-                                    "url": full_url,
-                                    "source": source
-                                })
-                                if len(articles) >= max_articles:
-                                    break
-
-                elif source == "moneyweb":
-                    # Look for article links in search results  
-                    article_links = soup.find_all('a', href=True)
-                    for link in article_links[:max_articles]:
-                        href = link.get('href', '')
-                        if 'moneyweb.co.za' in href and ('/news/' in href or '/investing/' in href or '/markets/' in href):
-                            headline = link.get_text(strip=True)
-                            if headline and len(headline) > 10:
-                                full_url = self._clean_url(href, "https://www.moneyweb.co.za")
-                                articles.append({
-                                    "headline": headline,
-                                    "url": full_url,
-                                    "source": source
-                                })
-                                if len(articles) >= max_articles:
-                                    break
-
-                # Extract content for each article
-                for article in articles:
-                    if article['url']:
-                        content = self._extract_article_content(article['url'], source)
-                        article['content'] = content
-                    else:
-                        article['content'] = ""
-                
-                # Only keep articles with substantial content
-                articles = [a for a in articles if a.get('content', '') and len(a['content']) > 100]
-                results.extend(articles)
-                
-            except requests.exceptions.HTTPError as e:
-                print(f"[WebSupplementationAgent] HTTP Error {e.response.status_code} from {source}: {e}")
-            except Exception as e:
-                print(f"[WebSupplementationAgent] Error fetching from {source}: {e}")
-
-        return results[:max_articles]  # Limit total results
-
-    def summarize_articles(self, articles, max_length=150):
-        """
-        Summarize a list of articles using the LM or fallback method.
-        Always returns list of dicts with 'summary'.
-        """
-        summaries = []
-        
-        for article in articles:
-            content = article.get("content", "")
-            headline = article.get("headline", "")
+        Args:
+            tickers: List of JSE tickers (with or without .JO suffix)
             
-            if not content and not headline:
-                continue
-                
-            try:
-                # Use the full content for summarization, fallback to headline
-                text_to_summarize = content if content else headline
-                
-                if self.model and self.tokenizer and len(text_to_summarize) > 100:
-                    # Use ML model for summarization
-                    prompt = f"Summarize this financial news article: {text_to_summarize[:1500]}"
-                    
-                    inputs = self.tokenizer(
-                        prompt,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=512,
-                        padding=True
-                    ).to(self.device)
+        Returns:
+            List of stock data dictionaries
+        """
+        # Ensure tickers have .JO suffix
+        jse_tickers = [ticker if ticker.endswith('.JO') else f"{ticker}.JO" for ticker in tickers]
+        
+        async with aiohttp.ClientSession():
+            tasks = [self._fetch_single_stock_async(ticker) for ticker in jse_tickers]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Filter out exceptions and None results
+            valid_results = []
+            for result in results:
+                if isinstance(result, dict) and result is not None:
+                    valid_results.append(result)
+            
+            return valid_results
 
-                    with torch.no_grad():
-                        summary_ids = self.model.generate(
-                            inputs.input_ids,
-                            max_length=max_length,
-                            min_length=30,
-                            length_penalty=2.0,
-                            num_beams=3,
-                            early_stopping=True,
-                            do_sample=False
-                        )
+    async def _fetch_single_stock_async(self, ticker: str) -> Dict[str, Any]:
+        """
+        Async fetch for single stock data
+        """
+        try:
+            stock = yf.Ticker(ticker)
+            
+            # Get basic info and history
+            info = stock.info
+            hist = stock.history(period='1d', interval='1m')
+            
+            if hist.empty:
+                return None
+            
+            # Extract price data
+            current_price = self._convert_price_to_rands(hist['Close'].iloc[-1])
+            previous_close = self._convert_price_to_rands(info.get('previousClose', current_price))
+            change = current_price - previous_close
+            change_percent = (change / previous_close) * 100
+            
+            # Get additional metrics
+            volume = info.get('volume', 0)
+            market_cap = info.get('marketCap')
+            day_high = self._convert_price_to_rands(info.get('dayHigh', current_price))
+            day_low = self._convert_price_to_rands(info.get('dayLow', current_price))
+            
+            return {
+                'ticker': ticker.replace('.JO', ''),
+                'full_ticker': ticker,
+                'current_price': round(current_price, 2),
+                'change': round(change, 2),
+                'change_percent': round(change_percent, 2),
+                'previous_close': round(previous_close, 2),
+                'volume': volume,
+                'market_cap': market_cap,
+                'day_high': round(day_high, 2),
+                'day_low': round(day_low, 2),
+                'timestamp': datetime.now().isoformat(),
+                'status': 'up' if change > 0 else 'down' if change < 0 else 'flat'
+            }
+            
+        except Exception as e:
+            print(f"[WebAgent] Async fetch error for {ticker}: {e}")
+            return None
 
-                    summary = self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+    async def get_live_news_async(self, tickers: List[str], max_articles: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get live news asynchronously for multiple stocks
+        
+        Args:
+            tickers: List of stock tickers
+            max_articles: Maximum number of articles to return
+            
+        Returns:
+            List of news articles
+        """
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for ticker in tickers:
+                task = self._fetch_news_for_ticker_async(session, ticker, max_per=3)
+                tasks.append(task)
+            
+            all_articles = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Flatten and deduplicate
+            flattened_articles = []
+            for article_list in all_articles:
+                if isinstance(article_list, list):
+                    flattened_articles.extend(article_list)
+            
+            # Remove duplicates by headline
+            unique_articles = []
+            seen_headlines = set()
+            
+            for article in flattened_articles:
+                if article['headline'] not in seen_headlines:
+                    seen_headlines.add(article['headline'])
+                    unique_articles.append(article)
+            
+            return sorted(unique_articles, 
+                        key=lambda x: x.get('published', ''), 
+                        reverse=True)[:max_articles]
+
+    async def _fetch_news_for_ticker_async(self, session: aiohttp.ClientSession, 
+                                         ticker: str, max_per: int = 3) -> List[Dict[str, Any]]:
+        """
+        Async fetch news for a single ticker
+        """
+        try:
+            company_name = ticker.replace('.JO', '')
+            search_query = f'JSE {company_name} stock'
+            rss_url = f"https://news.google.com/rss/search?q={quote_plus(search_query)}&hl=en-ZA"
+            
+            async with session.get(rss_url, headers=self.headers, timeout=10) as response:
+                if response.status == 200:
+                    content = await response.text()
+                    feed = feedparser.parse(content)
                     
-                    # Clean up the summary
-                    summary = summary.replace(prompt, "").strip()
-                    if not summary:
-                        summary = self._extractive_summary(text_to_summarize)
+                    articles = []
+                    for entry in feed.entries[:max_per]:
+                        summary = re.sub(r'<[^>]+>', '', entry.get('summary', entry.title)).strip()
                         
+                        articles.append({
+                            "headline": entry.title,
+                            "ticker": ticker,
+                            "company": company_name,
+                            "source": entry.get('source', {}).get('title', 'Google News'),
+                            "summary": summary[:200] + "..." if len(summary) > 200 else summary,
+                            "link": entry.link,
+                            "published": entry.get('published', ''),
+                            "fetched_at": datetime.now().isoformat()
+                        })
+                    
+                    return articles
                 else:
-                    # Fallback: extractive summary
-                    summary = self._extractive_summary(text_to_summarize)
-                
-                article["summary"] = summary
-                
-            except Exception as e:
-                print(f"[WebSupplementationAgent] Error summarizing article: {e}")
-                # Fallback to extractive summary
-                article["summary"] = self._extractive_summary(content or headline)
-            
-            summaries.append(article)
-            
-        return summaries
+                    return []
+                    
+        except Exception as e:
+            print(f"[WebAgent] Async news fetch error for {ticker}: {e}")
+            return []
 
-    def _extractive_summary(self, text, max_sentences=3):
+    def get_major_jse_tickers(self) -> List[str]:
         """
-        Create an extractive summary by taking the first few sentences.
-        Fallback method when ML summarization fails.
+        Get list of major JSE tickers for live dashboard
         """
-        if not text:
-            return "No content available."
-        
-        # Split into sentences
-        sentences = re.split(r'[.!?]+', text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
-        
-        # Take first few sentences that seem substantial
-        summary_sentences = []
-        for sentence in sentences[:max_sentences]:
-            if len(sentence) > 30:  # Only substantial sentences
-                summary_sentences.append(sentence)
-        
-        summary = '. '.join(summary_sentences)
-        return summary[:500] + "..." if len(summary) > 500 else summary
+        return [
+            'MTN.JO', 'NPN.JO', 'SBK.JO', 'FSR.JO', 'AGL.JO', 
+            'SOL.JO', 'VOD.JO', 'CPI.JO', 'BHP.JO', 'CFR.JO'
+        ]
 
-    # Quick patch for Web Agent to provide fallback data
+    # Synchronous wrapper for async methods (for compatibility)
+    def get_live_stock_data_sync(self, tickers: List[str]) -> List[Dict[str, Any]]:
+        """
+        Synchronous wrapper for get_live_stock_data
+        """
+        try:
+            return asyncio.run(self.get_live_stock_data(tickers))
+        except Exception as e:
+            print(f"[WebAgent] Sync wrapper error: {e}")
+            return []
 
-    def get_relevant_info(self, user_query, max_articles=5):
+    def get_live_news_sync(self, tickers: List[str], max_articles: int = 10) -> List[Dict[str, Any]]:
         """
-        Fetch and summarize articles based on user query.
-        Returns a list of dicts with 'headline', 'url', 'source', 'summary', 'content'.
+        Synchronous wrapper for get_live_news_async
         """
-        print(f"[WebSupplementationAgent] Fetching articles for query: '{user_query}'")
-    
-        articles = self.fetch_articles(user_query, max_articles)
-        if not articles:
-            print("[WebSupplementationAgent] No articles found, using fallback data.")
-        
-            # Provide contextual fallback based on query keywords
-            if "portfolio" in user_query.lower() and "diversif" in user_query.lower():
-                fallback_articles = [
-                    {
-                        "headline": "JSE Portfolio Diversification: Expert Tips for South African Investors",
-                        "url": "https://example.com/jse-diversification",
-                        "source": "fallback",
-                        "summary": "Financial experts recommend diversifying JSE portfolios across sectors including mining (AGL, BIL), banking (SBK, FSR), telecommunications (MTN, VOD), and retail (SHP, TRU) to reduce concentration risk and improve long-term returns.",
-                        "content": "Diversification across JSE sectors is crucial for South African investors to manage risk effectively in volatile markets."
-                    },
-                    {
-                        "headline": "Banking Sector Concentration Risk on JSE: What Investors Need to Know", 
-                        "url": "https://example.com/jse-banking-risk",
-                        "source": "fallback",
-                        "summary": "Holding only banking stocks (SBK, FSR, NED) exposes investors to sector-specific risks including interest rate changes, regulatory shifts, and economic downturns. Diversification into mining, retail, and technology sectors can help mitigate these risks.",
-                        "content": "JSE banking sector concentration carries significant risks that can be mitigated through proper diversification strategies."
-                    }
-                ]
-                return fallback_articles
-        
-            elif "bank" in user_query.lower() and "jse" in user_query.lower():
-                fallback_articles = [
-                    {
-                        "headline": "JSE Banking Stocks Analysis: SBK, FSR, NED Performance Review",
-                        "url": "https://example.com/jse-banking-analysis", 
-                        "source": "fallback",
-                        "summary": "Major JSE banking stocks include Standard Bank (SBK), FirstRand (FSR), Nedbank (NED), and Capitec (CPI). These stocks are sensitive to interest rate cycles, credit loss provisions, and South African economic conditions.",
-                        "content": "JSE banking sector represents a significant portion of the market but requires careful analysis of macroeconomic factors."
-                    }
-                ]
-                return fallback_articles
-        
-            else:
-                # Generic JSE fallback
-                fallback_articles = [
-                    {
-                        "headline": "JSE Market Update: Key Trends and Investment Opportunities",
-                        "url": "https://example.com/jse-market-update",
-                        "source": "fallback", 
-                        "summary": "The Johannesburg Stock Exchange continues to offer diverse investment opportunities across mining, banking, retail, and technology sectors. Investors should consider rand volatility, commodity prices, and local economic conditions when making investment decisions.",
-                        "content": "JSE market analysis considers multiple factors including commodity prices, rand strength, and local economic indicators."
-                    }
-                ]
-                return fallback_articles
-    
-        summarized_articles = self.summarize_articles(articles)
-    
-        # Ensure all items are properly formatted
-        cleaned_articles = []
-        for a in summarized_articles:
-            if isinstance(a, dict):
-                cleaned_article = {
-                    "headline": a.get("headline", "No headline"),
-                    "url": a.get("url", ""),
-                    "source": a.get("source", "unknown"),
-                    "summary": a.get("summary", "No summary available"),
-                    "content": a.get("content", "")
-                }
-                cleaned_articles.append(cleaned_article)
-    
-        print(f"[WebSupplementationAgent] Returning {len(cleaned_articles)} processed articles.")
-        return cleaned_articles
+        try:
+            return asyncio.run(self.get_live_news_async(tickers, max_articles))
+        except Exception as e:
+            print(f"[WebAgent] Sync news wrapper error: {e}")
+            return []
+
+    def get_agent_capabilities(self) -> Dict[str, Any]:
+        """
+        Return information about agent capabilities
+        """
+        return {
+            "name": "Enhanced Web Supplementation Agent",
+            "version": "2.0",
+            "capabilities": [
+                "Synchronous market data fetching",
+                "Asynchronous live data streaming", 
+                "News aggregation",
+                "JSE ticker resolution",
+                "Real-time price conversion",
+                "Market sentiment analysis"
+            ],
+            "async_support": True,
+            "live_dashboard_optimized": True
+        }
