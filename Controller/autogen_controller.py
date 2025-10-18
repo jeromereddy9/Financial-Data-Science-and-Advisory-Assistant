@@ -1,4 +1,4 @@
-# Controller/autogen_controller.py - FINAL FIXED VERSION
+﻿# Controller/autogen_controller.py - FINAL FIXED VERSION
 
 import sys
 import os
@@ -17,7 +17,7 @@ from Model.summarizer_model import SummarizerAgent
 from Model.embeddings_model import EmbeddingAgent
 
 # Import the actual MemoryManager
-from Controller.memory_manager import MemoryManager  # Make sure this file is in Model/memory_manager.py
+from Controller.memory_manager import MemoryManager
 
 class FinancialAdvisoryController:
     def __init__(self):
@@ -39,7 +39,12 @@ class FinancialAdvisoryController:
             "data_visualization": ["chart", "graph", "plot", "visualize", "data", "trends"]
         }
 
-        self.conceptual_keywords = ['what is', 'what are', 'explain', 'define', 'who is', 'tell me about']
+        # --- THE MINIMAL CHANGE IS HERE ---
+        # Expanded the list to include common follow-up question starters.
+        self.conceptual_keywords = [
+            'what is', 'what are', 'explain', 'define', 'who is', 'tell me about',
+            'how is', 'how does', 'why is', 'why does'
+        ]
 
     def _initialize_agents(self):
         """Initialize all agents with error handling"""
@@ -115,7 +120,10 @@ class FinancialAdvisoryController:
 
             if starts_with_conceptual_keyword and not is_analytical:
                 print("[Controller] Conceptual query detected. Routing to explain_concept.")
-                concept_explanation = self.agents['advisor'].explain_concept(user_query)
+                concept_explanation = self.agents['advisor'].explain_concept(
+                    user_query,
+                    history=self.conversation_history if maintain_history else None
+                )
                 if maintain_history:
                     self.conversation_history.append((user_query, concept_explanation))
                 return {
@@ -170,7 +178,7 @@ class FinancialAdvisoryController:
                 "analysis_results": analysis_results,
                 "web_context": external_context.get('articles', [])[:3],
                 "market_data_context": external_context.get("market_data"),
-                "tickers_analyzed": external_context.get("tickers_analyzed", []),  # ADDED THIS LINE
+                "tickers_analyzed": external_context.get("tickers_analyzed", []),
                 "memory_used": bool(memory_context),
                 "system_status": self._get_system_status()
             }

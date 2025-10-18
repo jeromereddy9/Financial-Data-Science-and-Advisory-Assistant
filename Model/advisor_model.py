@@ -55,7 +55,7 @@ class AdvisorAgent:
             return self
 
         def add_internal_process(self):
-            """Adds instructions for the model's internal thought process (Chain Of Thought)."""
+            """Adds instructions for the model's internal thought process (Chain of Thought)."""
             self.parts.append(
                 "**INTERNAL PROCESS (do NOT output):**\n"
                 "- Verify that every price, change, and percentage figure appears in CONTEXT exactly.\n"
@@ -86,6 +86,14 @@ class AdvisorAgent:
                 "- Do not add any other sections like 'INVESTMENT TAKEAWAY' or repeat sections.\n"
                 "- Mention every stock symbol present in the CONTEXT.\n"
                 "- Do not invent or infer any figure that is not explicitly given."
+            )
+            return self
+        
+        def add_conceptual_prompt(self):
+            """Adds a simple instruction for explaining concepts."""
+            self.parts.append(
+                "**TASK:**\n"
+                "Explain the following financial concept clearly and concisely, as a professional financial analyst would to a client."
             )
             return self
 
@@ -214,15 +222,7 @@ class AdvisorAgent:
                 .add_internal_process() \
                 .add_output_format() \
                 .add_strict_rules() \
-                .add_user_query(
-                    query +
-                    "\n\nIMPORTANT:\n"
-                    "- Use ONLY numerical data provided in the MARKET CONTEXT above.\n"
-                    "- If data is missing, explicitly say 'Data unavailable' instead of estimating or inventing values.\n"
-                    "- All analysis and conclusions MUST be based solely on the provided context data.\n"
-                    "- Include both REASONING and FINAL CONCLUSION sections.\n"
-                    "- Provide exactly ONE cohesive and verified final response.\n"
-                ) \
+                .add_user_query(query) \
                 .build()
 
             inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
@@ -280,6 +280,54 @@ class AdvisorAgent:
             return f"I encountered an error while processing your request: {str(e)}. Please try again."
 
 
-    def explain_concept(self, concept):
-        """Enhanced concept explanation."""
-        return self.get_financial_advice(f"Explain this financial concept: {concept}")
+    def explain_concept(self, concept: str, history: Optional[List[Tuple[str, str]]] = None) -> str:
+        """
+        Generates an explanation for a financial concept using a dedicated, simpler prompt.
+        """
+        try:
+            # Use a dedicated prompt for explaining concepts, avoiding the rigid stock analysis framework
+            prompt = self.PromptBuilder() \
+                .add_persona() \
+                .add_conversation_history(history) \
+                .add_conceptual_prompt() \
+                .add_user_query(concept) \
+                .build()
+
+            inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=512,
+                    do_sample=True,
+                    temperature=0.6, # Allow for more creative/explanatory text
+                    top_p=0.9,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    repetition_penalty=1.1
+                )
+
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            prompt_length = len(self.tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=True))
+            generated_response = response[prompt_length:].strip()
+
+            # --- FINAL, FLEXIBLE CLEANUP LOGIC ---
+            # Define a list of unwanted markers/phrases to remove.
+            unwanted_markers = [
+                "**EXPLANATION:**", "**END OF EXPLANATION.**",
+                "**TASK:**", "**QUERY:**", "**ANSWER:**"
+            ]
+            
+            # Remove the markers and any surrounding whitespace
+            for marker in unwanted_markers:
+                generated_response = generated_response.replace(marker, "")
+
+            # Also remove the original query if it's echoed back in quotes
+            quoted_query = f'"{concept}"'
+            generated_response = generated_response.replace(quoted_query, '')
+
+            return generated_response.strip() if generated_response.strip() else "I can't seem to explain that right now. Please try again."
+
+        except Exception as e:
+            print(f"[AdvisorAgent] Error in explain_concept: {e}")
+            return f"I encountered an error while explaining the concept: {str(e)}."
