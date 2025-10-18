@@ -1,4 +1,4 @@
-﻿# Model/advisor_model.py - FINAL FIXED VERSION
+# Model/advisor_model.py - COMPLETE CORRECTED VERSION
 
 import os
 import warnings
@@ -15,7 +15,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 warnings.filterwarnings("ignore")
 
 class AdvisorAgent:
-    class PromptBuilder:
+    class AnalyticalPromptBuilder:
         def __init__(self):
             self.parts = []
 
@@ -108,6 +108,62 @@ class AdvisorAgent:
         def build(self):
             return "\n\n".join(self.parts)
 
+    class ConceptPromptBuilder:
+        def __init__(self):
+            self.parts = []
+
+        def add_persona(self):
+            self.parts.append(
+                "You are a financial educator specializing in clear, accurate explanations of financial concepts for JSE investors. You provide simple, correct explanations without complex formatting."
+            )
+            return self
+
+        def add_conversation_history(self, history):
+            if history:
+                history_text = "**RECENT CONVERSATION:**\n"
+                for i, (prev_query, prev_response) in enumerate(history[-2:]):  # Reduced to last 2
+                    history_text += f"User: {prev_query}\nAnalyst: {prev_response}\n\n"
+                self.parts.append(history_text)
+            return self
+
+        def add_explanation_framework(self):
+            """Sets the framework for clear, accurate concept explanations."""
+            self.parts.append(
+                "**EXPLANATION FRAMEWORK - FOLLOW EXACTLY:**\n"
+                "1. Start with a simple one-sentence definition\n"
+                "2. Provide a clear example with CORRECT numbers and calculations\n"
+                "3. Explain why this matters to JSE investors\n"
+                "4. Keep it to 3-4 paragraphs maximum\n"
+                "5. Use only plain text - NO markdown, NO LaTeX, NO complex formatting\n"
+                "6. Ensure all mathematical calculations are simple and accurate\n"
+                "7. Write in complete sentences with proper punctuation\n"
+                "8. Do not use bullet points, numbered lists, or special characters"
+            )
+            return self
+
+        def add_strict_rules(self):
+            """Adds strict rules for accurate explanations."""
+            self.parts.append(
+                "**CRITICAL RULES - MUST FOLLOW:**\n"
+                "- ALL mathematical examples must be factually correct\n"
+                "- Use only basic arithmetic that can be easily verified\n"
+                "- If you provide numbers, keep them simple and realistic\n"
+                "- NEVER use LaTeX, markdown, or special formatting\n"
+                "- Write in continuous paragraphs without line breaks\n"
+                "- Double-check that your calculations make sense\n"
+                "- If unsure about accuracy, simplify the example\n"
+                "- End your explanation with a complete sentence\n"
+                "- Maximum 400 words total"
+            )
+            return self
+
+        def add_user_query(self, query):
+            self.parts.append(f'**CONCEPT TO EXPLAIN:** "{query}"\n\n**YOUR EXPLANATION:**')
+            return self
+
+        def build(self):
+            return "\n\n".join(self.parts)
+
     def __init__(self):
         self.model_name = "Qwen/Qwen2.5-3B-Instruct"
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -131,7 +187,6 @@ class AdvisorAgent:
             self.tokenizer.padding_side = "left"
 
     def _load_model_with_fallback(self):
-        # This method is correct and requires no changes
         attn_implementation = "sdpa"
         if self.device == "cuda":
             vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
@@ -150,7 +205,6 @@ class AdvisorAgent:
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name, torch_dtype=self.dtype, trust_remote_code=True
             ).to(self.device)
-
 
     def _format_context(self, context: Dict[str, Any]) -> str:
         """Formats context by parsing market data into a structured, readable format for the LLM."""
@@ -207,13 +261,12 @@ class AdvisorAgent:
 
         return "\n".join(parts) if parts else "Limited market data available."
 
-
     def get_financial_advice(self, query, context=None, history=None):
         """Enhanced advice generation with robust parsing to prevent repetition and format errors."""
         try:
             context_str = self._format_context(context) if context else "No additional context."
 
-            prompt = self.PromptBuilder() \
+            prompt = self.AnalyticalPromptBuilder() \
                 .add_report_header() \
                 .add_persona() \
                 .add_conversation_history(history) \
@@ -279,55 +332,121 @@ class AdvisorAgent:
             print(f"[AdvisorAgent] Error generating response: {e}")
             return f"I encountered an error while processing your request: {str(e)}. Please try again."
 
+    def _clean_concept_response(self, response: str, concept: str) -> str:
+        """Clean and validate concept explanation responses."""
+        if not response:
+            return f"I cannot provide an explanation for '{concept}' at the moment."
+        
+        # Fix line break issues in words
+        response = re.sub(r'(\w)\s*\n\s*(\w)', r'\1\2', response)
+        
+        # Remove any markdown formatting
+        response = re.sub(r'[*_`#]', '', response)
+        
+        # Fix mathematical formatting issues
+        response = re.sub(r'\\\[.*?\\\]', '', response)  # Remove LaTeX
+        response = re.sub(r'\$.*?\$', '', response)      # Remove math symbols
+        
+        # Ensure the response ends with proper punctuation
+        if response and not response.endswith(('.', '!', '?')):
+            # Find the last complete sentence
+            sentences = re.split(r'[.!?]', response)
+            if len(sentences) > 1:
+                # Rebuild with complete sentences only
+                complete_sentences = [s.strip() for s in sentences[:-1] if s.strip()]
+                if complete_sentences:
+                    response = '. '.join(complete_sentences) + '.'
+                else:
+                    response = response.strip() + '.'
+            else:
+                response = response.strip() + '.'
+        
+        # Remove any duplicate whitespace
+        response = re.sub(r'\s+', ' ', response).strip()
+        
+        # Validate response length and quality
+        if len(response.split()) < 10:
+            return f"I don't have a detailed explanation for '{concept}' readily available. Please try rephrasing your question or ask about a different financial concept."
+        
+        return response
 
     def explain_concept(self, concept: str, history: Optional[List[Tuple[str, str]]] = None) -> str:
         """
-        Generates an explanation for a financial concept using a dedicated, simpler prompt.
+        Generates an explanation for a financial concept using the ConceptPromptBuilder.
         """
         try:
-            # Use a dedicated prompt for explaining concepts, avoiding the rigid stock analysis framework
-            prompt = self.PromptBuilder() \
+            # Clean the concept query first
+            clean_concept = concept.strip()
+            if clean_concept.lower().startswith('what is '):
+                clean_concept = clean_concept[8:].strip()
+            
+            prompt = self.ConceptPromptBuilder() \
                 .add_persona() \
                 .add_conversation_history(history) \
-                .add_conceptual_prompt() \
-                .add_user_query(concept) \
+                .add_explanation_framework() \
+                .add_strict_rules() \
+                .add_user_query(f"Explain this financial concept clearly and correctly: {clean_concept}") \
                 .build()
 
-            inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+            inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=600,
                     do_sample=True,
-                    temperature=0.6, # Allow for more creative/explanatory text
-                    top_p=0.9,
+                    temperature=0.5,
+                    top_p=0.85,
+                    top_k=40,
                     pad_token_id=self.tokenizer.eos_token_id,
-                    repetition_penalty=1.1
+                    repetition_penalty=1.3,
+                    no_repeat_ngram_size=2,
+                    early_stopping=True,
+                    num_return_sequences=1
                 )
 
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             prompt_length = len(self.tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=True))
             generated_response = response[prompt_length:].strip()
 
-            # --- FINAL, FLEXIBLE CLEANUP LOGIC ---
-            # Define a list of unwanted markers/phrases to remove.
-            unwanted_markers = [
-                "**EXPLANATION:**", "**END OF EXPLANATION.**",
-                "**TASK:**", "**QUERY:**", "**ANSWER:**"
-            ]
+            # Clean up formatting issues
+            generated_response = self._clean_concept_response(generated_response, clean_concept)
             
-            # Remove the markers and any surrounding whitespace
-            for marker in unwanted_markers:
-                generated_response = generated_response.replace(marker, "")
-
-            # Also remove the original query if it's echoed back in quotes
-            quoted_query = f'"{concept}"'
-            generated_response = generated_response.replace(quoted_query, '')
-
-            return generated_response.strip() if generated_response.strip() else "I can't seem to explain that right now. Please try again."
+            return generated_response
 
         except Exception as e:
-            print(f"[AdvisorAgent] Error in explain_concept: {e}")
-            return f"I encountered an error while explaining the concept: {str(e)}."
+            print(f"[AdvisorAgent] Error explaining concept: {e}")
+            return f"I encountered an error while explaining that concept. Please try asking again more specifically."
+
+    def process_query(self, query: str, context: Optional[Dict[str, Any]] = None, 
+                     history: Optional[List[Tuple[str, str]]] = None) -> str:
+        """
+        Smart query router that detects whether it's an analytical or conceptual query.
+        """
+        # Keywords that indicate conceptual questions
+        concept_keywords = [
+            'what is', 'explain', 'define', 'meaning of', 'how does', 'what are',
+            'tell me about', 'describe', 'concept of', 'understanding'
+        ]
+        
+        # Keywords that indicate analytical questions  
+        analytical_keywords = [
+            'analyze', 'analysis', 'compare', 'performance', 'price', 'stock',
+            'market', 'trend', 'forecast', 'predict', 'recommend', 'advice',
+            'should i', 'buy', 'sell', 'hold', 'investment'
+        ]
+        
+        query_lower = query.lower()
+        
+        # Check for conceptual queries first
+        is_conceptual = any(keyword in query_lower for keyword in concept_keywords)
+        is_analytical = any(keyword in query_lower for keyword in analytical_keywords)
+        
+        # If it's clearly conceptual or not clearly analytical, use concept explanation
+        if is_conceptual and not is_analytical:
+            print("[AdvisorAgent] Detected conceptual query, using explain_concept")
+            return self.explain_concept(query, history)
+        else:
+            print("[AdvisorAgent] Detected analytical query, using get_financial_advice")
+            return self.get_financial_advice(query, context, history)

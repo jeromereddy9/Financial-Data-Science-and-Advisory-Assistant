@@ -1,4 +1,4 @@
-﻿# Controller/autogen_controller.py - FINAL FIXED VERSION
+# Controller/autogen_controller.py - FINAL FIXED VERSION
 
 import sys
 import os
@@ -39,8 +39,7 @@ class FinancialAdvisoryController:
             "data_visualization": ["chart", "graph", "plot", "visualize", "data", "trends"]
         }
 
-        # --- THE MINIMAL CHANGE IS HERE ---
-        # Expanded the list to include common follow-up question starters.
+        # Conceptual keywords for query detection
         self.conceptual_keywords = [
             'what is', 'what are', 'explain', 'define', 'who is', 'tell me about',
             'how is', 'how does', 'why is', 'why does'
@@ -104,6 +103,27 @@ class FinancialAdvisoryController:
             print(f"[Controller] WARNING in _is_analytical_query: {e}")
             return False
 
+    def _is_conceptual_query(self, query: str) -> bool:
+        """Determine if a query is conceptual using improved detection logic"""
+        query_lower = query.lower().strip()
+        
+        # Check for conceptual keywords anywhere in the query
+        is_conceptual = any(keyword in query_lower for keyword in self.conceptual_keywords)
+        
+        # Check for analytical keywords that would override conceptual intent
+        analytical_keywords = [
+            'analyze', 'analysis', 'compare', 'performance', 'price', 'stock',
+            'market', 'trend', 'forecast', 'predict', 'recommend', 'advice',
+            'should i', 'buy', 'sell', 'hold', 'investment'
+        ]
+        is_analytical = any(keyword in query_lower for keyword in analytical_keywords)
+        
+        # Also check if it contains stock tickers
+        has_tickers = self._is_analytical_query(query)
+        
+        # If it's conceptual AND not analytical AND has no tickers, treat as conceptual
+        return is_conceptual and not is_analytical and not has_tickers
+
     def reset_conversation(self):
         """Reset conversation history"""
         self.conversation_history = []
@@ -115,10 +135,10 @@ class FinancialAdvisoryController:
         try:
             print(f"[Controller] Processing query: {user_query[:100]}...")
             
-            is_analytical = self._is_analytical_query(user_query)
-            starts_with_conceptual_keyword = any(user_query.lower().strip().startswith(key) for key in self.conceptual_keywords)
+            # Use the improved conceptual query detection
+            is_conceptual = self._is_conceptual_query(user_query)
 
-            if starts_with_conceptual_keyword and not is_analytical:
+            if is_conceptual:
                 print("[Controller] Conceptual query detected. Routing to explain_concept.")
                 concept_explanation = self.agents['advisor'].explain_concept(
                     user_query,
@@ -130,7 +150,7 @@ class FinancialAdvisoryController:
                     "session_id": "conceptual_session",
                     "request_type": "conceptual_explanation",
                     "advisor_full_response": concept_explanation,
-                    "summary": concept_explanation[:200] + "...",
+                    "summary": concept_explanation[:200] + "..." if len(concept_explanation) > 200 else concept_explanation,
                     "detailed_insights": "",
                     "executive_summary": {},
                     "analysis_results": None,
@@ -151,6 +171,7 @@ class FinancialAdvisoryController:
                 "memory_context": memory_context
             }
 
+            # Use the advisor's smart routing for analytical queries
             advisor_response = self._get_advisor_response(
                 user_query,
                 combined_context,
@@ -222,15 +243,24 @@ class FinancialAdvisoryController:
 
     def _get_advisor_response(self, user_query: str, combined_context: Dict,
                               history: Optional[List[Tuple[str, str]]] = None) -> str:
-        """Get response from advisor agent"""
+        """Get response from advisor agent - uses process_query for smart routing"""
         if not self.agents.get('advisor'):
             return "Advisor agent not available."
         try:
-            return self.agents['advisor'].get_financial_advice(
-                user_query,
-                context=combined_context,
-                history=history
-            )
+            # Use the advisor's smart routing method if available
+            if hasattr(self.agents['advisor'], 'process_query'):
+                return self.agents['advisor'].process_query(
+                    user_query,
+                    context=combined_context,
+                    history=history
+                )
+            else:
+                # Fallback to direct method
+                return self.agents['advisor'].get_financial_advice(
+                    user_query,
+                    context=combined_context,
+                    history=history
+                )
         except Exception as e:
             print(f"[Controller] Error generating advisor response: {e}")
             return f"An error occurred in the advisor agent: {str(e)}"
