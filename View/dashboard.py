@@ -1,4 +1,4 @@
-# app.py - FIXED VERSION with independent tab refresh
+﻿# app.py - FIXED VERSION with independent tab refresh
 import streamlit as st
 import sys
 import os
@@ -355,9 +355,18 @@ class JSEAdvisoryApp:
                     if articles:
                         with st.expander(f"📰 Relevant News ({len(articles)} articles)", expanded=False):
                             for article in articles:
-                                st.write(f"**{article.get('headline', 'No headline')}**")
-                                st.write(f"*Source: {article.get('source', 'Unknown')}*")
-                                st.write(f"{article.get('summary', 'No summary available')}")
+                                headline = article.get('headline', 'No headline')
+                                link = article.get('link')
+                                source = article.get('source', 'Unknown')
+                                summary = article.get('summary', 'No summary available')
+
+                                if link:
+                                    st.markdown(f"**<a href='{link}' target='_blank'>{headline}</a>**", unsafe_allow_html=True)
+                                else:
+                                    st.write(f"**{headline}**")
+                                
+                                st.write(f"*Source: {source}*")
+                                st.write(summary)
                                 st.divider()
                     
                     # Analysis results
@@ -497,17 +506,20 @@ class JSEAdvisoryApp:
             st.subheader(f"📢 Latest Market News ({len(st.session_state.news_data)} articles)")
             
             for i, article in enumerate(st.session_state.news_data):
-                # Create a nice news card
-                with st.expander(f"📰 {article.get('headline', 'No headline')[:80]}...", expanded=False):
+                headline = article.get('headline', 'No headline')
+                link = article.get('link')
+                
+                with st.expander(f"📰 {headline[:80]}...", expanded=False):
                     col1, col2 = st.columns([3, 1])
                     
                     with col1:
-                        st.write(f"**{article.get('headline', 'No headline')}**")
+                        if link:
+                            st.markdown(f"**<a href='{link}' target='_blank'>{headline}</a>**", unsafe_allow_html=True)
+                        else:
+                            st.write(f"**{headline}**")
+                            
                         st.write(f"**Stock:** {article.get('ticker', 'N/A').replace('.JO', '')}")
                         st.write(article.get('summary', 'No summary available'))
-                        
-                        if article.get('link'):
-                            st.markdown(f"[Read full article]({article.get('link')})")
                     
                     with col2:
                         st.write(f"*Source: {article.get('source', 'Unknown source')}*")
@@ -535,9 +547,16 @@ class JSEAdvisoryApp:
                         if articles:
                             st.write(f"### 📰 News for {name}")
                             for article in articles:
-                                with st.expander(f"**{article.get('headline')}**", expanded=False):
-                                    st.write(f"*Source: {article.get('source', 'Unknown')}*")
-                                    st.write(article.get('summary', 'No summary'))
+                                headline = article.get('headline', 'No headline')
+                                link = article.get('link')
+                                source = article.get('source', 'Unknown')
+                                summary = article.get('summary', 'No summary')
+
+                                with st.expander(f"**{headline}**", expanded=False):
+                                    st.write(f"*Source: {source}*")
+                                    st.write(summary)
+                                    if link:
+                                        st.markdown(f"<a href='{link}' target='_blank'>Read full article</a>", unsafe_allow_html=True)
                         else:
                             st.warning(f"No recent news found for {search_ticker}")
                     else:

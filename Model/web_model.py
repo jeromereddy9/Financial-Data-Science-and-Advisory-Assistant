@@ -1,4 +1,4 @@
-# web_model.py - ENHANCED VERSION with async support
+﻿# web_model.py - ENHANCED VERSION with async support
 import re
 import time
 import asyncio
@@ -66,6 +66,25 @@ class WebSupplementationAgent:
             'reunert': 'RLO.JO'
         }
 
+    def _create_useful_summary(self, entry: Dict[str, Any], company_name: str) -> str:
+        """
+        Creates a useful summary, falling back to a generated one if the RSS summary is poor.
+        """
+        headline = entry.get('title', '')
+        original_summary = entry.get('summary', '')
+        source = entry.get('source', {}).get('title', 'a news source')
+
+        # Clean the original summary by removing any HTML tags
+        cleaned_summary = re.sub(r'<[^>]+>', '', original_summary).strip()
+
+        # A good summary should exist and be meaningfully longer than the headline
+        if cleaned_summary and len(cleaned_summary) > len(headline) + 15:
+            # If the summary is useful, return it (truncated)
+            return cleaned_summary[:200] + "..." if len(cleaned_summary) > 200 else cleaned_summary
+        else:
+            # If not, generate a more informative fallback summary
+            return f"An article from {source} covering recent news and developments related to {company_name}. Click to read the full story."
+
     def _resolve_tickers(self, query: str) -> List[Tuple[str, str]]:
         """Enhanced ticker resolution"""
         query_lower = query.lower()
@@ -82,7 +101,7 @@ class WebSupplementationAgent:
 
     def _convert_price_to_rands(self, price):
         """Convert price from cents to Rands if needed"""
-        if price > 1000:  # Likely in cents
+        if price and price > 1000:  # Likely in cents
             return price / 100
         return price
 
@@ -141,14 +160,16 @@ class WebSupplementationAgent:
                 for entry in feed.entries[:max_per]:
                     # Avoid duplicates
                     if not any(entry.title == existing['headline'] for existing in all_articles):
-                        summary = re.sub(r'<[^>]+>', '', entry.get('summary', entry.title)).strip()
+                        # Use the new helper to get a useful summary
+                        summary = self._create_useful_summary(entry, name)
                         
                         all_articles.append({
                             "headline": entry.title,
                             "ticker": ticker,
                             "company": name,
                             "source": entry.get('source', {}).get('title', 'News'),
-                            "summary": summary[:150] + "..." if len(summary) > 150 else summary,
+                            "summary": summary,
+                            "link": entry.link
                         })
                 
             except Exception:
@@ -350,14 +371,15 @@ class WebSupplementationAgent:
                     
                     articles = []
                     for entry in feed.entries[:max_per]:
-                        summary = re.sub(r'<[^>]+>', '', entry.get('summary', entry.title)).strip()
+                        # Use the new helper to get a useful summary
+                        summary = self._create_useful_summary(entry, company_name)
                         
                         articles.append({
                             "headline": entry.title,
                             "ticker": ticker,
                             "company": company_name,
                             "source": entry.get('source', {}).get('title', 'Google News'),
-                            "summary": summary[:200] + "..." if len(summary) > 200 else summary,
+                            "summary": summary,
                             "link": entry.link,
                             "published": entry.get('published', ''),
                             "fetched_at": datetime.now().isoformat()
